@@ -6,7 +6,8 @@ installing them safely in Codex and Claude.
 ## Install and configure
 
 ```sh
-npm install --global @hivemnd-ai/cli
+npm install --global \
+  https://github.com/hivemnd-ai/cli/releases/download/v0.1.0/hivemnd-ai-cli-0.1.0.tgz
 
 hivemnd config init --api-url https://shared.hivemnd.cloud/eigen
 hivemnd config destination add codex-global \
@@ -26,6 +27,10 @@ hivemnd doctor
 hivemnd sync
 hivemnd sync --apply
 ```
+
+The public GitHub release is the production distribution for the MVP. The npm
+package name is reserved as `@hivemnd-ai/cli`; publishing it to npm can be added
+without changing the executable or config contract.
 
 The default config is `~/.hivemnd/config.json`. Override the state directory
 with `HIVEMND_HOME`, or only the config path with `HIVEMND_CONFIG` or
