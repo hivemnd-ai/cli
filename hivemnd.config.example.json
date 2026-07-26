@@ -1,0 +1,22 @@
+{
+  "apiUrl": "https://shared.hivemnd.cloud/eigen",
+  "destinations": [
+    {
+      "name": "codex-global",
+      "agent": "codex",
+      "scope": "root"
+    },
+    {
+      "name": "codex-workspace",
+      "agent": "codex",
+      "scope": "workspace",
+      "path": "/absolute/path/to/workspace"
+    },
+    {
+      "name": "claude-workspace",
+      "agent": "claude",
+      "scope": "workspace",
+      "path": "/absolute/path/to/workspace"
+    }
+  ]
+}
