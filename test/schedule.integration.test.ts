@@ -80,13 +80,20 @@ describe("periodic sync scheduler", () => {
     expect((await stat(plistPath)).mode & 0o777).toBe(0o600);
     await expect(scheduler.status(request)).resolves.toEqual({
       active: true,
+      errorLogPath: join(
+        temp.path,
+        ".hivemnd/logs",
+        `sync-${identity}.error.log`,
+      ),
       identity,
       installed: true,
       intervalMinutes: 15,
+      lastRunFailed: undefined,
     });
     await expect(scheduler.remove(request)).resolves.toMatchObject({
       installed: false,
       active: false,
+      lastRunFailed: false,
     });
     await expect(scheduler.remove(request)).resolves.toMatchObject({
       installed: false,
@@ -106,7 +113,12 @@ describe("periodic sync scheduler", () => {
   it("installs an idempotent Linux systemd user timer with private logs and exact arguments", async () => {
     const temp = await temporaryDirectory();
     cleanups.push(temp.cleanup);
-    const execute = runner();
+    const execute = vi.fn<ScheduleCommandRunner>(async (command, args) => ({
+      stdout:
+        command === "systemctl" && args.includes("show")
+          ? "exit-code\n"
+          : "active\n",
+    }));
     const configPath = join(temp.path, "tenant % config.json");
     const stateDirectory = join(temp.path, ".hivemnd");
     const scheduler = new PeriodicSyncScheduler({
@@ -146,22 +158,122 @@ describe("periodic sync scheduler", () => {
     await expect(scheduler.status(request)).resolves.toMatchObject({
       installed: true,
       active: true,
+      lastRunFailed: true,
+      errorLogPath: join(stateDirectory, "logs", `sync-${identity}.error.log`),
+    });
+    expect(execute).toHaveBeenCalledWith("systemctl", [
+      "--user",
+      "show",
+      "--property=Result",
+      "--value",
+      serviceName,
+    ]);
+    execute.mockImplementation(async (command, args) => ({
+      stdout:
+        command === "systemctl" && args.includes("show")
+          ? "success\n"
+          : "active\n",
+    }));
+    await expect(scheduler.status(request)).resolves.toMatchObject({
+      lastRunFailed: false,
+    });
+    execute.mockImplementation(async (command, args) => ({
+      stdout:
+        command === "systemctl" && args.includes("show") ? "" : "active\n",
+    }));
+    await expect(scheduler.status(request)).resolves.toMatchObject({
+      active: true,
+      lastRunFailed: undefined,
+    });
+    execute.mockImplementation(async (command, args) => {
+      if (command === "systemctl" && args.includes("show")) {
+        throw new Error("service result unavailable");
+      }
+      return { stdout: "active\n" };
+    });
+    await expect(scheduler.status(request)).resolves.toMatchObject({
+      active: true,
+      lastRunFailed: undefined,
     });
     await scheduler.remove(request);
-    expect(execute.calls).toContainEqual([
-      "systemctl",
+    await expect(scheduler.status(request)).resolves.toMatchObject({
+      installed: false,
+      active: false,
+      lastRunFailed: undefined,
+    });
+    expect(execute).toHaveBeenCalledWith("systemctl", [
       "--user",
       "enable",
       "--now",
       timerName,
     ]);
-    expect(execute.calls).toContainEqual([
-      "systemctl",
+    expect(execute).toHaveBeenCalledWith("systemctl", [
       "--user",
       "disable",
       "--now",
       timerName,
     ]);
+  });
+
+  it("reports macOS last-run failures without treating a loaded agent as inactive", async () => {
+    const temp = await temporaryDirectory();
+    cleanups.push(temp.cleanup);
+    const execute = vi.fn<ScheduleCommandRunner>().mockResolvedValue({
+      stdout: "",
+    });
+    const stateDirectory = join(temp.path, ".hivemnd");
+    const scheduler = new PeriodicSyncScheduler({
+      platform: "darwin",
+      homeDirectory: temp.path,
+      stateDirectory,
+      runtimeExecutablePath: "/usr/local/bin/node",
+      cliScriptPath: "/usr/local/lib/hivemnd/dist/index.js",
+      userId: 501,
+      execute,
+    });
+    const request = {
+      apiUrl: "https://shared.hivemnd.cloud/eigen",
+      configPath: join(temp.path, "config.json"),
+      intervalMinutes: 15,
+    };
+    const identity = scheduleIdentity(request.apiUrl, request.configPath);
+    await scheduler.install(request);
+
+    execute.mockResolvedValue({
+      stdout: "runs = 2\nlast exit code = 1\n",
+    });
+    await expect(scheduler.status(request)).resolves.toEqual({
+      active: true,
+      errorLogPath: join(stateDirectory, "logs", `sync-${identity}.error.log`),
+      identity,
+      installed: true,
+      intervalMinutes: 15,
+      lastRunFailed: true,
+    });
+
+    execute.mockResolvedValue({
+      stdout: "runs = 3\nlast exit code = 0\n",
+    });
+    await expect(scheduler.status(request)).resolves.toMatchObject({
+      active: true,
+      lastRunFailed: false,
+    });
+
+    execute.mockResolvedValue({
+      stdout: "runs = 0\nlast exit code = 1\n",
+    });
+    await expect(scheduler.status(request)).resolves.toMatchObject({
+      active: true,
+      lastRunFailed: undefined,
+    });
+
+    execute.mockResolvedValue({
+      stdout: "runs = 1\n",
+    });
+    await expect(scheduler.status(request)).resolves.toMatchObject({
+      active: true,
+      lastRunFailed: undefined,
+    });
   });
 
   it("fails closed on Windows, invalid intervals, relative paths, and command failures", async () => {
@@ -320,18 +432,24 @@ describe("periodic sync scheduler", () => {
         identity: "x",
         installed: true,
         active: true,
+        lastRunFailed: undefined,
+        errorLogPath: "/tmp/x.error.log",
       })),
       status: vi.fn(async (request: ScheduleRequest) => ({
         ...request,
         identity: "x",
         installed: true,
         active: true,
+        lastRunFailed: false,
+        errorLogPath: "/tmp/x.error.log",
       })),
       remove: vi.fn(async (request: ScheduleRequest) => ({
         ...request,
         identity: "x",
         installed: false,
         active: false,
+        lastRunFailed: false,
+        errorLogPath: "/tmp/x.error.log",
       })),
     };
     const manager = createScheduleManager(scheduler, {

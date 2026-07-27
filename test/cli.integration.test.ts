@@ -88,18 +88,24 @@ async function setup(
         installed: true,
         active: true,
         intervalMinutes,
+        lastRunFailed: undefined,
+        errorLogPath: "/tmp/hivemnd.error.log",
       }),
       status: async () => ({
         identity: "test",
         installed: false,
         active: false,
         intervalMinutes: 15,
+        lastRunFailed: false,
+        errorLogPath: "/tmp/hivemnd.error.log",
       }),
       remove: async () => ({
         identity: "test",
         installed: false,
         active: false,
         intervalMinutes: 15,
+        lastRunFailed: false,
+        errorLogPath: "/tmp/hivemnd.error.log",
       }),
     }),
     ...overrides,
@@ -886,18 +892,24 @@ describe("command shell", () => {
       installed: true,
       active: true,
       intervalMinutes,
+      lastRunFailed: undefined,
+      errorLogPath: "/tmp/tenant.error.log",
     }));
     const status = vi.fn(async () => ({
       identity: "tenant-id",
       installed: true,
       active: true,
       intervalMinutes: 15,
+      lastRunFailed: true,
+      errorLogPath: "/tmp/tenant.error.log",
     }));
     const remove = vi.fn(async () => ({
       identity: "tenant-id",
       installed: false,
       active: false,
       intervalMinutes: 15,
+      lastRunFailed: false,
+      errorLogPath: "/tmp/tenant.error.log",
     }));
     const scheduleManagerFactory = vi.fn(() => ({ install, status, remove }));
     const { temp, deps } = await setup({ scheduleManagerFactory });
@@ -925,7 +937,7 @@ describe("command shell", () => {
       "schedule tenant-id: installed, active, every 30 minute(s)",
     );
     expect(deps.output.messages).toContain(
-      "schedule tenant-id: installed, active, every 15 minute(s)",
+      "schedule tenant-id: installed, active, every 15 minute(s); last run failed; inspect: /tmp/tenant.error.log",
     );
     expect(deps.output.messages).toContain("schedule tenant-id: removed");
 
@@ -1036,7 +1048,7 @@ describe("command shell", () => {
     expect(defaultDependencies.clientPlatform).toBe(
       `${process.platform}-${process.arch}`,
     );
-    expect(defaultDependencies.clientVersion).toBe("0.2.1");
+    expect(defaultDependencies.clientVersion).toBe("0.2.2");
     expect(
       defaultDependencies.scheduleManagerFactory({
         apiUrl: "https://shared.hivemnd.cloud/eigen",

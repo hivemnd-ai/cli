@@ -22,6 +22,8 @@ export interface ScheduleState {
   readonly installed: boolean;
   readonly active: boolean;
   readonly intervalMinutes: number;
+  readonly lastRunFailed: boolean | undefined;
+  readonly errorLogPath: string;
 }
 
 export interface ScheduleManager {
@@ -61,7 +63,7 @@ export class PeriodicSyncScheduler {
       await this.installSystemdTimer(request);
     }
     await this.writeMetadata(request);
-    return this.state(request, true, true);
+    return this.state(request, true, true, undefined);
   }
 
   async status(request: ScheduleRequest): Promise<ScheduleState> {
@@ -69,13 +71,19 @@ export class PeriodicSyncScheduler {
     const effective = await this.effectiveRequest(request);
     if (this.options.platform === "darwin") {
       const installed = await exists(this.launchAgentPath(effective));
-      const active =
-        installed &&
-        (await this.commandSucceeds("launchctl", [
-          "print",
-          this.launchTarget(effective),
-        ]));
-      return this.state(effective, installed, active);
+      const launchState = installed
+        ? await this.commandOutput("launchctl", [
+            "print",
+            this.launchTarget(effective),
+          ])
+        : undefined;
+      const active = launchState !== undefined;
+      return this.state(
+        effective,
+        installed,
+        active,
+        macOsLastRunFailed(launchState),
+      );
     }
     const installed =
       (await exists(this.systemdServicePath(effective))) &&
@@ -97,7 +105,21 @@ export class PeriodicSyncScheduler {
         "--quiet",
         timer,
       ]));
-    return this.state(effective, installed, active);
+    const serviceResult = installed
+      ? await this.commandOutput("systemctl", [
+          "--user",
+          "show",
+          "--property=Result",
+          "--value",
+          this.systemdServiceName(effective),
+        ])
+      : undefined;
+    return this.state(
+      effective,
+      installed,
+      active,
+      systemdLastRunFailed(serviceResult),
+    );
   }
 
   async remove(request: ScheduleRequest): Promise<ScheduleState> {
@@ -121,7 +143,7 @@ export class PeriodicSyncScheduler {
       await this.execute("systemctl", ["--user", "daemon-reload"]);
     }
     await rm(this.metadataPath(effective), { force: true });
-    return this.state(effective, false, false);
+    return this.state(effective, false, false, false);
   }
 
   private validate(request: ScheduleRequest): void {
@@ -330,11 +352,17 @@ WantedBy=timers.target
     command: string,
     args: readonly string[],
   ): Promise<boolean> {
+    return (await this.commandOutput(command, args)) !== undefined;
+  }
+
+  private async commandOutput(
+    command: string,
+    args: readonly string[],
+  ): Promise<string | undefined> {
     try {
-      await this.execute(command, args);
-      return true;
+      return (await this.execute(command, args)).stdout;
     } catch {
-      return false;
+      return undefined;
     }
   }
 
@@ -342,12 +370,15 @@ WantedBy=timers.target
     request: ScheduleRequest,
     installed: boolean,
     active: boolean,
+    lastRunFailed: boolean | undefined,
   ): ScheduleState {
     return {
       identity: scheduleIdentity(request.apiUrl, request.configPath),
       installed,
       active,
       intervalMinutes: request.intervalMinutes,
+      lastRunFailed,
+      errorLogPath: this.stderrPath(request),
     };
   }
 
@@ -498,4 +529,25 @@ function hasControlCharacters(value: string): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function macOsLastRunFailed(output: string | undefined): boolean | undefined {
+  if (output === undefined) return undefined;
+  const runs = capturedNumber(output, /\bruns\s*=\s*(\d+)/);
+  if (runs === undefined || runs <= 0) return undefined;
+  const exitCode = capturedNumber(output, /\blast exit code\s*=\s*(-?\d+)/);
+  if (exitCode === undefined) return undefined;
+  return exitCode !== 0;
+}
+
+function systemdLastRunFailed(output: string | undefined): boolean | undefined {
+  if (output === undefined) return undefined;
+  const result = output.trim();
+  if (result.length === 0) return undefined;
+  return result !== "success";
+}
+
+function capturedNumber(output: string, pattern: RegExp): number | undefined {
+  const captured = pattern.exec(output)?.[1];
+  return captured === undefined ? undefined : Number(captured);
 }

@@ -83,5 +83,8 @@ function parseInterval(value: string): number {
 function formatState(state: ScheduleState): string {
   const installed = state.installed ? "installed" : "not installed";
   const active = state.active ? "active" : "inactive";
-  return `schedule ${state.identity}: ${installed}, ${active}, every ${state.intervalMinutes} minute(s)`;
+  const failure = state.lastRunFailed
+    ? `; last run failed; inspect: ${state.errorLogPath}`
+    : "";
+  return `schedule ${state.identity}: ${installed}, ${active}, every ${state.intervalMinutes} minute(s)${failure}`;
 }

@@ -105,6 +105,15 @@ It stores no token. Logs and minimal scheduler metadata live under
 private permissions. Authentication still comes from Keychain or the scheduled
 process environment at execution time.
 
+An `active` schedule means the operating system loaded its timer; it does not
+guarantee that the last sync succeeded. `hivemnd schedule status` reports
+`last run failed` and the exact private error-log path when launchd or systemd
+records a failed execution. On macOS, workspaces under protected `Desktop` or
+`Documents` folders may require granting Full Disk Access to the exact Node
+runtime used by the schedule (inspect it with `node -p 'process.execPath'`). Do
+not weaken folder permissions to work around TCC; grant access deliberately,
+run the schedule again, and review both status and its reported error log.
+
 To adopt skills already present in a destination, preview and then apply the
 explicit adoption mode:
 
