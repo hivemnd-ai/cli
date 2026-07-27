@@ -172,7 +172,7 @@ describe("secure credential storage", () => {
       code: "KEYCHAIN_UNAVAILABLE",
     });
     await expect(
-      new MacOsKeychain("hivemnd-test-nonexistent").get(),
+      new MacOsKeychain("hivemnd-test-nonexistent", "darwin").get(),
     ).resolves.toBeUndefined();
     await expect(
       runCommand(
