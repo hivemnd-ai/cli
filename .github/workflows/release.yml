@@ -77,12 +77,12 @@ jobs:
           install_root="$(mktemp -d)"
           trap 'rm -rf "$install_root"' EXIT
 
-          for attempt in 1 2 3 4 5; do
-            if test "$(npm view "$package_name@$package_version" version 2>/dev/null)" = "$package_version"; then
+          for attempt in $(seq 1 18); do
+            if test "$(npm view --prefer-online "$package_name@$package_version" version 2>/dev/null)" = "$package_version"; then
               break
             fi
-            test "$attempt" -lt 5
-            sleep 5
+            test "$attempt" -lt 18
+            sleep 10
           done
 
           npm install --prefix "$install_root" "$package_name@$package_version"
