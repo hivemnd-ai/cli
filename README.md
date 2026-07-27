@@ -6,8 +6,9 @@ installing them safely in Codex and Claude.
 ## Install and configure
 
 ```sh
-npm install --global \
-  https://github.com/hivemnd-ai/cli/releases/download/v0.1.0/hivemnd-ai-cli-0.1.0.tgz
+npm install --global @hivemnd-ai/cli
+
+hivemnd --version
 
 hivemnd config init --api-url https://shared.hivemnd.cloud/eigen
 hivemnd config destination add codex-global \
@@ -28,9 +29,12 @@ hivemnd sync
 hivemnd sync --apply
 ```
 
-The public GitHub release is the production distribution for the MVP. The npm
-package name is reserved as `@hivemnd-ai/cli`; publishing it to npm can be added
-without changing the executable or config contract.
+Stable GitHub releases publish the matching package version to npm through
+`.github/workflows/release.yml`. The release tag must be exactly `v` followed by
+the version in `package.json`, and the built `hivemnd --version` output must
+match both before publication. The public package is published with npm
+provenance and then installed from the registry in a clean directory as the
+final release check.
 
 The default config is `~/.hivemnd/config.json`. Override the state directory
 with `HIVEMND_HOME`, or only the config path with `HIVEMND_CONFIG` or
@@ -152,3 +156,24 @@ The integration-oriented suite enforces 100% statements, branches, functions
 and lines for application TypeScript. `src/cli.ts` is the composition root;
 command registration, workflows, runtime ports and filesystem/API adapters stay
 separate.
+
+## Release
+
+The npm publisher should be configured for `hivemnd-ai/cli` using the exact
+workflow filename `release.yml`, with `npm publish` allowed and no GitHub
+environment. The workflow uses GitHub OIDC and grants only `contents: read` and
+`id-token: write`; npm automatically exchanges that identity for a short-lived
+credential. After trusted publishing is active, configure npm to require 2FA
+and disallow traditional publish tokens.
+
+Because npm requires a package to exist before its trusted publisher can be
+configured, the first release may use a one-time granular npm token stored only
+as the encrypted GitHub Actions secret `NPM_TOKEN`. Delete that secret
+immediately after the first successful publish, configure the trusted publisher,
+and use OIDC for every later release. Never commit a token or write one into a
+workflow file.
+
+To release, update `package.json`, `package-lock.json`, and
+`defaultDependencies.clientVersion` to the same new version, merge to `main`,
+then publish a non-prerelease GitHub release tagged `v<version>`. npm versions
+and release tags are immutable; never reuse either.

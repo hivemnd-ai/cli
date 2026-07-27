@@ -40,5 +40,5 @@ export const defaultDependencies: RuntimeDependencies = {
   targetAccess: (path) => access(path, constants.R_OK | constants.W_OK),
   id: randomUUID,
   clientPlatform: `${process.platform}-${process.arch}`,
-  clientVersion: "0.1.0",
+  clientVersion: "0.1.1",
 };

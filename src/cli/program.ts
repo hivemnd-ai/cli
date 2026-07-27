@@ -19,6 +19,7 @@ export function createProgram(dependencies: RuntimeDependencies): Command {
   const program = new Command()
     .name("hivemnd")
     .description("Synchronize governed Hivemnd artifacts with local AI agents")
+    .version(dependencies.clientVersion)
     .option("-c, --config <path>", "configuration file", defaultConfig)
     .showHelpAfterError()
     .exitOverride();

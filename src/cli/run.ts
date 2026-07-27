@@ -13,7 +13,8 @@ export async function runProgram(
   } catch (error: unknown) {
     if (
       error instanceof CommanderError &&
-      error.code === "commander.helpDisplayed"
+      (error.code === "commander.helpDisplayed" ||
+        error.code === "commander.version")
     ) {
       return 0;
     }

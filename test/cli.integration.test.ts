@@ -730,6 +730,23 @@ describe("source discovery commands", () => {
 });
 
 describe("command shell", () => {
+  it("prints the injected package version without loading configuration", async () => {
+    const { deps } = await setup({
+      configRepositoryFactory: () => {
+        throw new Error("version must not load configuration");
+      },
+    });
+    const write = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+
+    await expect(runCli(["--version"], deps)).resolves.toBe(0);
+
+    expect(write.mock.calls.map(([value]) => String(value)).join("")).toBe(
+      "9.8.7-test\n",
+    );
+  });
+
   it("handles help and normalizes unknown failures", async () => {
     const { deps } = await setup();
     const write = vi
@@ -795,7 +812,7 @@ describe("command shell", () => {
     expect(defaultDependencies.clientPlatform).toBe(
       `${process.platform}-${process.arch}`,
     );
-    expect(defaultDependencies.clientVersion).toBe("0.1.0");
+    expect(defaultDependencies.clientVersion).toBe("0.1.1");
     const defaultPath = createProgram({ ...deps, environment: {} }).opts<{
       config: string;
     }>().config;

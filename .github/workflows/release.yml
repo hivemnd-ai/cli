@@ -1,0 +1,74 @@
+name: Publish npm package
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'hivemnd-ai/cli' && github.event.release.prerelease == false
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the immutable release tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Node and the public npm registry
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Pin an OIDC-capable npm client
+        run: npm install --global npm@11.6.2
+
+      - name: Install and verify
+        run: |
+          npm ci
+          npm run check
+
+      - name: Verify the release identity and package contents
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          package_version="$(node -p "require('./package.json').version")"
+          test "$RELEASE_TAG" = "v$package_version"
+          test "$(git rev-parse "HEAD^{commit}")" = "$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          test "$(node dist/index.js --version)" = "$package_version"
+          npm pack --dry-run
+
+      - name: Publish the public package with provenance
+        run: npm publish --access public --provenance
+        env:
+          # OIDC is preferred. This secret is only an optional first-publish bootstrap.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Prove registry installation
+        run: |
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+          install_root="$(mktemp -d)"
+          trap 'rm -rf "$install_root"' EXIT
+
+          for attempt in 1 2 3 4 5; do
+            if test "$(npm view "$package_name@$package_version" version 2>/dev/null)" = "$package_version"; then
+              break
+            fi
+            test "$attempt" -lt 5
+            sleep 5
+          done
+
+          npm install --prefix "$install_root" "$package_name@$package_version"
+          test "$("$install_root/node_modules/.bin/hivemnd" --version)" = "$package_version"

@@ -1,7 +1,15 @@
 {
   "name": "@hivemnd-ai/cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Securely synchronize Hivemnd artifacts with local AI coding agents.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hivemnd-ai/cli.git"
+  },
+  "homepage": "https://github.com/hivemnd-ai/cli#readme",
+  "bugs": {
+    "url": "https://github.com/hivemnd-ai/cli/issues"
+  },
   "type": "module",
   "bin": {
     "hivemnd": "dist/index.js"
@@ -41,6 +49,7 @@
   },
   "license": "UNLICENSED",
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "provenance": true
   }
 }
