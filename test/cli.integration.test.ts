@@ -812,7 +812,7 @@ describe("command shell", () => {
     expect(defaultDependencies.clientPlatform).toBe(
       `${process.platform}-${process.arch}`,
     );
-    expect(defaultDependencies.clientVersion).toBe("0.1.2");
+    expect(defaultDependencies.clientVersion).toBe("0.1.3");
     const defaultPath = createProgram({ ...deps, environment: {} }).opts<{
       config: string;
     }>().config;
