@@ -97,7 +97,9 @@ The default interval is 15 minutes. macOS uses a LaunchAgent and Linux uses a
 systemd user timer; Windows intentionally reports the Task Scheduler command
 that an administrator must configure. Every schedule is isolated by the exact
 tenant URL and absolute config path, can be installed again safely, and invokes
-the installed executable as `hivemnd --config <absolute-path> sync --apply`.
+the absolute Node runtime with the absolute installed CLI script as
+`<node> <cli-script> --config <absolute-path> sync --apply`. This avoids relying
+on a shell, inherited `PATH`, or the npm bin shim's `/usr/bin/env node` shebang.
 It stores no token. Logs and minimal scheduler metadata live under
 `$HIVEMND_HOME/logs` and `$HIVEMND_HOME/schedules` (normally `~/.hivemnd`) with
 private permissions. Authentication still comes from Keychain or the scheduled

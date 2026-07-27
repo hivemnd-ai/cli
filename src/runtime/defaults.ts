@@ -18,7 +18,7 @@ import { DailyUpdateChecker } from "../update/daily-update-checker.js";
 import type { RuntimeDependencies } from "./dependencies.js";
 
 const stateDirectory = process.env.HIVEMND_HOME ?? join(homedir(), ".hivemnd");
-const clientVersion = "0.2.0";
+const clientVersion = "0.2.1";
 
 export const defaultDependencies: RuntimeDependencies = {
   cwd: process.cwd(),
@@ -59,7 +59,8 @@ export const defaultDependencies: RuntimeDependencies = {
         platform: process.platform,
         homeDirectory: homedir(),
         stateDirectory,
-        executablePath: resolveExecutablePath(process.argv[1]),
+        runtimeExecutablePath: process.execPath,
+        cliScriptPath: resolveCliScriptPath(process.argv[1]),
         userId: resolveUserId(process.getuid),
       }),
       { apiUrl, configPath },
@@ -70,6 +71,6 @@ export function resolveUserId(getUserId: (() => number) | undefined): number {
   return getUserId ? getUserId() : 0;
 }
 
-export function resolveExecutablePath(value: string | undefined): string {
+export function resolveCliScriptPath(value: string | undefined): string {
   return resolve(value ?? "hivemnd");
 }

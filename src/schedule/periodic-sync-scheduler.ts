@@ -39,7 +39,8 @@ interface SchedulerOptions {
   readonly platform: NodeJS.Platform;
   readonly homeDirectory: string;
   readonly stateDirectory: string;
-  readonly executablePath: string;
+  readonly runtimeExecutablePath: string;
+  readonly cliScriptPath: string;
   readonly userId: number;
   readonly execute?: ScheduleCommandRunner;
 }
@@ -149,15 +150,22 @@ export class PeriodicSyncScheduler {
         "Scheduled synchronization requires an absolute config path",
       );
     }
-    if (!isAbsolute(this.options.executablePath)) {
+    if (!isAbsolute(this.options.runtimeExecutablePath)) {
       throw new HivemndError(
         "CONFIG_INVALID",
-        "Scheduled synchronization requires an absolute hivemnd executable path",
+        "Scheduled synchronization requires an absolute Node runtime path",
+      );
+    }
+    if (!isAbsolute(this.options.cliScriptPath)) {
+      throw new HivemndError(
+        "CONFIG_INVALID",
+        "Scheduled synchronization requires an absolute Hivemnd CLI script path",
       );
     }
     if (
       hasControlCharacters(request.configPath) ||
-      hasControlCharacters(this.options.executablePath)
+      hasControlCharacters(this.options.runtimeExecutablePath) ||
+      hasControlCharacters(this.options.cliScriptPath)
     ) {
       throw new HivemndError(
         "CONFIG_INVALID",
@@ -277,7 +285,8 @@ WantedBy=timers.target
 
   private syncArguments(request: ScheduleRequest): readonly string[] {
     return [
-      this.options.executablePath,
+      this.options.runtimeExecutablePath,
+      this.options.cliScriptPath,
       "--config",
       request.configPath,
       "sync",

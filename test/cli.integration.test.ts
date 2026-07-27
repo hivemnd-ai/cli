@@ -12,7 +12,7 @@ import { parseEnrollmentUrl } from "../src/auth/enrollment-url.js";
 import { ConfigRepository } from "../src/config.js";
 import { createProgram } from "../src/cli/program.js";
 import {
-  resolveExecutablePath,
+  resolveCliScriptPath,
   resolveUserId,
 } from "../src/runtime/defaults.js";
 import type {
@@ -1036,7 +1036,7 @@ describe("command shell", () => {
     expect(defaultDependencies.clientPlatform).toBe(
       `${process.platform}-${process.arch}`,
     );
-    expect(defaultDependencies.clientVersion).toBe("0.2.0");
+    expect(defaultDependencies.clientVersion).toBe("0.2.1");
     expect(
       defaultDependencies.scheduleManagerFactory({
         apiUrl: "https://shared.hivemnd.cloud/eigen",
@@ -1045,10 +1045,10 @@ describe("command shell", () => {
     ).toBeDefined();
     expect(resolveUserId(() => 501)).toBe(501);
     expect(resolveUserId(undefined)).toBe(0);
-    expect(resolveExecutablePath("/usr/local/bin/hivemnd")).toBe(
-      "/usr/local/bin/hivemnd",
+    expect(resolveCliScriptPath("/usr/local/lib/hivemnd/dist/index.js")).toBe(
+      "/usr/local/lib/hivemnd/dist/index.js",
     );
-    expect(resolveExecutablePath(undefined)).toBe(
+    expect(resolveCliScriptPath(undefined)).toBe(
       join(process.cwd(), "hivemnd"),
     );
     const defaultPath = createProgram({ ...deps, environment: {} }).opts<{

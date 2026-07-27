@@ -9,7 +9,7 @@
 - Treat remote content as untrusted: validate schemas, hashes, and destination boundaries before writing.
 - Enforce a manifest's `minimum_client_version` before downloading artifacts or preparing a synchronization plan.
 - Keep update discovery advisory and non-mutating. Network or cache failures must never break the user's requested command.
-- Periodic sync must use native user-level schedulers, an absolute executable and config path, and the explicit `sync --apply` command. Isolate schedules by tenant plus config, and never persist tokens in scheduler definitions or metadata.
+- Periodic sync must use native user-level schedulers, the absolute Node runtime and CLI script paths, an absolute config path, and the explicit `sync --apply` command. Never rely on an inherited `PATH` or npm bin shebang. Isolate schedules by tenant plus config, and never persist tokens in scheduler definitions or metadata.
 
 ## Quality gates
 

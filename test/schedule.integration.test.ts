@@ -39,7 +39,9 @@ describe("periodic sync scheduler", () => {
       platform: "darwin",
       homeDirectory: temp.path,
       stateDirectory: join(temp.path, ".hivemnd"),
-      executablePath: "/Applications/Hivemnd & tools/hivemnd",
+      runtimeExecutablePath:
+        "/Users/felipe/.nvm/versions/node/v24 & stable/bin/node",
+      cliScriptPath: "/Applications/Hivemnd & tools/dist/index.js",
       userId: 501,
       execute,
     });
@@ -64,7 +66,12 @@ describe("periodic sync scheduler", () => {
     });
     const plist = await readFile(plistPath, "utf8");
     expect(plist).toContain("<integer>900</integer>");
-    expect(plist).toContain("/Applications/Hivemnd &amp; tools/hivemnd");
+    expect(plist).toContain(
+      "<string>/Users/felipe/.nvm/versions/node/v24 &amp; stable/bin/node</string>",
+    );
+    expect(plist).toContain(
+      "<string>/Applications/Hivemnd &amp; tools/dist/index.js</string>",
+    );
     expect(plist).toContain("tenant &amp; config.json");
     expect(plist).toContain("<string>--config</string>");
     expect(plist).toContain("<string>sync</string>");
@@ -106,7 +113,8 @@ describe("periodic sync scheduler", () => {
       platform: "linux",
       homeDirectory: temp.path,
       stateDirectory,
-      executablePath: "/opt/Hivemnd CLI/hivemnd",
+      runtimeExecutablePath: "/home/felipe/.nvm/versions/node/v24/bin/node",
+      cliScriptPath: "/opt/Hivemnd CLI/dist/index.js",
       userId: 1000,
       execute,
     });
@@ -124,7 +132,7 @@ describe("periodic sync scheduler", () => {
     const service = await readFile(join(unitDirectory, serviceName), "utf8");
     const timer = await readFile(join(unitDirectory, timerName), "utf8");
     expect(service).toContain(
-      'ExecStart="/opt/Hivemnd CLI/hivemnd" "--config"',
+      'ExecStart="/home/felipe/.nvm/versions/node/v24/bin/node" "/opt/Hivemnd CLI/dist/index.js" "--config"',
     );
     expect(service).toContain('tenant %% config.json" "sync" "--apply"');
     expect(timer).toContain("OnUnitActiveSec=30min");
@@ -163,7 +171,8 @@ describe("periodic sync scheduler", () => {
       platform: "win32",
       homeDirectory: temp.path,
       stateDirectory: join(temp.path, ".hivemnd"),
-      executablePath: "C:\\hivemnd.exe",
+      runtimeExecutablePath: "C:\\node.exe",
+      cliScriptPath: "C:\\hivemnd.js",
       userId: 1,
       execute: runner(),
     });
@@ -182,7 +191,8 @@ describe("periodic sync scheduler", () => {
       platform: "linux",
       homeDirectory: temp.path,
       stateDirectory: join(temp.path, ".hivemnd"),
-      executablePath: "/usr/bin/hivemnd",
+      runtimeExecutablePath: "/usr/bin/node",
+      cliScriptPath: "/usr/lib/hivemnd/dist/index.js",
       userId: 1,
       execute: async () => {
         throw new Error("system service unavailable");
@@ -202,7 +212,19 @@ describe("periodic sync scheduler", () => {
         platform: "linux",
         homeDirectory: temp.path,
         stateDirectory: join(temp.path, ".hivemnd"),
-        executablePath: "relative-bin",
+        runtimeExecutablePath: "relative-node",
+        cliScriptPath: "/usr/lib/hivemnd/dist/index.js",
+        userId: 1,
+        execute: runner(),
+      }).install(request),
+    ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(
+      new PeriodicSyncScheduler({
+        platform: "linux",
+        homeDirectory: temp.path,
+        stateDirectory: join(temp.path, ".hivemnd"),
+        runtimeExecutablePath: "/usr/bin/node",
+        cliScriptPath: "relative-index.js",
         userId: 1,
         execute: runner(),
       }).install(request),
@@ -224,7 +246,19 @@ describe("periodic sync scheduler", () => {
         platform: "linux",
         homeDirectory: temp.path,
         stateDirectory: join(temp.path, ".hivemnd"),
-        executablePath: "/usr/bin/hivemnd\nunsafe",
+        runtimeExecutablePath: "/usr/bin/node\nunsafe",
+        cliScriptPath: "/usr/lib/hivemnd/dist/index.js",
+        userId: 1,
+        execute: runner(),
+      }).install(request),
+    ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(
+      new PeriodicSyncScheduler({
+        platform: "linux",
+        homeDirectory: temp.path,
+        stateDirectory: join(temp.path, ".hivemnd"),
+        runtimeExecutablePath: "/usr/bin/node",
+        cliScriptPath: "/usr/lib/hivemnd/dist/index.js\nunsafe",
         userId: 1,
         execute: runner(),
       }).install(request),
@@ -248,7 +282,8 @@ describe("periodic sync scheduler", () => {
       platform: "darwin",
       homeDirectory: temp.path,
       stateDirectory: join(temp.path, ".hivemnd"),
-      executablePath: "/usr/local/bin/hivemnd",
+      runtimeExecutablePath: "/usr/local/bin/node",
+      cliScriptPath: "/usr/local/lib/hivemnd/dist/index.js",
       userId: 501,
       execute,
     });
