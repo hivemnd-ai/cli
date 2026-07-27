@@ -19,6 +19,7 @@ export function manifest(content = "# Team skill\n"): SyncManifest {
   const body = bytes(content);
   return {
     schemaVersion: 1,
+    minimumClientVersion: "0.1.0",
     release: { id: "release-1", sequence: 1 },
     generatedAt: new Date("2026-07-25T10:00:00.000Z"),
     expiresAt: new Date("2026-07-26T10:00:00.000Z"),
@@ -54,6 +55,7 @@ export function wireManifest(content = "# Team skill\n") {
   const source = manifest(content);
   return {
     schema_version: 1,
+    minimum_client_version: source.minimumClientVersion,
     release: source.release,
     generated_at: source.generatedAt.toISOString(),
     expires_at: source.expiresAt.toISOString(),

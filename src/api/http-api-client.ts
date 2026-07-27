@@ -16,6 +16,7 @@ import {
   type SyncReceipt,
 } from "../domain.js";
 import { HivemndError } from "../errors.js";
+import { parseSemver } from "../version/semver.js";
 import {
   isWithinTenant,
   resolveTenantUrl,
@@ -31,6 +32,11 @@ export const apiPaths = {
 
 const manifestSchema = z.object({
   schema_version: z.literal(1),
+  minimum_client_version: z
+    .string()
+    .refine((value) => parseSemver(value) !== undefined, {
+      message: "minimum_client_version must be valid SemVer",
+    }),
   release: z.object({
     id: z.string().min(1),
     sequence: z.number().int().nonnegative(),
@@ -139,6 +145,7 @@ export class HttpApiClient implements ApiClient {
       }
       return {
         schemaVersion: wire.schema_version,
+        minimumClientVersion: wire.minimum_client_version,
         release: wire.release,
         generatedAt: new Date(wire.generated_at),
         expiresAt,

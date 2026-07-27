@@ -6,6 +6,8 @@ import type {
   Output,
   TokenStore,
 } from "../domain.js";
+import type { ScheduleManager } from "../schedule/periodic-sync-scheduler.js";
+import type { UpdateService } from "../update/daily-update-checker.js";
 
 export interface ConfigRepositoryPort {
   load(path: string): Promise<HivemndConfig>;
@@ -36,4 +38,9 @@ export interface RuntimeDependencies {
   readonly id: () => string;
   readonly clientPlatform: string;
   readonly clientVersion: string;
+  readonly updateService: UpdateService;
+  readonly scheduleManagerFactory: (options: {
+    readonly apiUrl: string;
+    readonly configPath: string;
+  }) => ScheduleManager;
 }

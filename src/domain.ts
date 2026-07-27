@@ -46,6 +46,7 @@ export interface Artifact extends ManifestArtifact {
 
 export interface SyncManifest {
   readonly schemaVersion: 1;
+  readonly minimumClientVersion: string;
   readonly release: { readonly id: string; readonly sequence: number };
   readonly generatedAt: Date;
   readonly expiresAt: Date;

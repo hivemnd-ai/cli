@@ -318,6 +318,15 @@ describe("HTTP API adapter", () => {
       new HttpApiClient(malformed.url).manifest("token"),
     ).rejects.toMatchObject({ code: "MANIFEST_INVALID" });
 
+    const invalidMinimum = await serve((_request, response) => {
+      const wire = wireManifest();
+      wire.minimum_client_version = "next";
+      response.end(JSON.stringify(wire));
+    });
+    await expect(
+      new HttpApiClient(invalidMinimum.url).manifest("token"),
+    ).rejects.toMatchObject({ code: "MANIFEST_INVALID" });
+
     const expired = await serve((_request, response) =>
       response.end(JSON.stringify(wireManifest())),
     );

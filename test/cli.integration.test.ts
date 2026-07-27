@@ -11,7 +11,16 @@ import {
 import { parseEnrollmentUrl } from "../src/auth/enrollment-url.js";
 import { ConfigRepository } from "../src/config.js";
 import { createProgram } from "../src/cli/program.js";
-import type { ApiClient, HivemndConfig, TokenStore } from "../src/domain.js";
+import {
+  resolveExecutablePath,
+  resolveUserId,
+} from "../src/runtime/defaults.js";
+import type {
+  ApiClient,
+  HivemndConfig,
+  ManifestArtifact,
+  TokenStore,
+} from "../src/domain.js";
 import {
   api,
   captureOutput,
@@ -65,6 +74,34 @@ async function setup(
     id: () => "receipt-id",
     clientPlatform: "test-platform",
     clientVersion: "9.8.7-test",
+    updateService: {
+      check: async () => ({
+        checked: false,
+        currentVersion: "9.8.7-test",
+        updateAvailable: false,
+        command: "npm install --global @hivemnd-ai/cli@latest",
+      }),
+    },
+    scheduleManagerFactory: () => ({
+      install: async (intervalMinutes) => ({
+        identity: "test",
+        installed: true,
+        active: true,
+        intervalMinutes,
+      }),
+      status: async () => ({
+        identity: "test",
+        installed: false,
+        active: false,
+        intervalMinutes: 15,
+      }),
+      remove: async () => ({
+        identity: "test",
+        installed: false,
+        active: false,
+        intervalMinutes: 15,
+      }),
+    }),
     ...overrides,
     environment,
     output,
@@ -423,6 +460,30 @@ describe("authentication and diagnostics commands", () => {
 });
 
 describe("sync command", () => {
+  it("rejects an incompatible minimum client version before downloading or planning", async () => {
+    const selectedApi = api();
+    const download = vi.fn((token: string, artifact: ManifestArtifact) =>
+      selectedApi.download(token, artifact),
+    );
+    const { deps } = await setup({
+      clientVersion: "1.2.3",
+      selectedApi: {
+        ...selectedApi,
+        manifest: async () => ({
+          ...(await selectedApi.manifest("token")),
+          minimumClientVersion: "2.0.0",
+        }),
+        download,
+      },
+    });
+
+    await expect(runCli(["sync", "--apply"], deps)).resolves.toBe(1);
+    expect(download).not.toHaveBeenCalled();
+    expect(deps.output.errors).toEqual([
+      "[CLIENT_UPDATE_REQUIRED] Hivemnd CLI 2.0.0 or newer is required; installed: 1.2.3. Run: npm install --global @hivemnd-ai/cli@latest",
+    ]);
+  });
+
   it("is a dry run by default and recognizes explicit --dry-run", async () => {
     const first = await setup();
     await expect(runCli(["sync"], first.deps)).resolves.toBe(0);
@@ -730,6 +791,169 @@ describe("source discovery commands", () => {
 });
 
 describe("command shell", () => {
+  it("does not start automatic update discovery for informational or commandless invocations", async () => {
+    const check = vi.fn(async () =>
+      Promise.reject(new Error("update discovery must not start")),
+    );
+    const { deps } = await setup({ updateService: { check } });
+    const write = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+
+    for (const args of [
+      [] as string[],
+      ["--version"],
+      ["-V"],
+      ["--help"],
+      ["-h"],
+      ["status", "--help"],
+      ["--config", "status"],
+      ["--config=status"],
+    ]) {
+      await runCli(args, deps);
+    }
+
+    expect(check).not.toHaveBeenCalled();
+    expect(deps.output.messages).toEqual([]);
+    expect(write).toHaveBeenCalled();
+  });
+
+  it("shows a non-silent update notice last and offers an explicit non-mutating update check", async () => {
+    const check = vi.fn(
+      async ({ force = false }: { readonly force?: boolean } = {}) => ({
+        checked: force,
+        currentVersion: "9.8.7-test",
+        latestVersion: "10.0.0",
+        updateAvailable: true,
+        command: "npm install --global @hivemnd-ai/cli@latest",
+      }),
+    );
+    const { deps } = await setup({ updateService: { check } });
+
+    await expect(runCli(["status"], deps)).resolves.toBe(0);
+    expect(deps.output.messages.at(-1)).toBe(
+      "Update available: 9.8.7-test -> 10.0.0. Run: npm install --global @hivemnd-ai/cli@latest",
+    );
+    expect(check).toHaveBeenLastCalledWith({ force: false });
+
+    deps.output.messages.length = 0;
+    await expect(runCli(["update", "check"], deps)).resolves.toBe(0);
+    expect(deps.output.messages).toEqual([
+      "Update available: 9.8.7-test -> 10.0.0",
+      "Update command: npm install --global @hivemnd-ai/cli@latest",
+      "Hivemnd does not update itself silently.",
+    ]);
+    expect(check).toHaveBeenLastCalledWith({ force: true });
+  });
+
+  it("never changes command exit behavior when the background update check fails", async () => {
+    const { deps } = await setup({
+      updateService: {
+        check: async () => Promise.reject(new Error("npm offline")),
+      },
+    });
+
+    await expect(runCli(["status"], deps)).resolves.toBe(0);
+    expect(deps.output.errors).toEqual([]);
+    expect(deps.output.messages.at(-1)).toContain("release release-1");
+
+    deps.output.messages.length = 0;
+    await expect(runCli(["update", "check"], deps)).resolves.toBe(0);
+    expect(deps.output.messages).toEqual([
+      "Update check unavailable; no changes were made. Retry when npm is reachable.",
+    ]);
+
+    const current = await setup({
+      updateService: {
+        check: async () => ({
+          checked: true,
+          currentVersion: "9.8.7-test",
+          latestVersion: "9.8.7",
+          updateAvailable: false,
+          command: "npm install --global @hivemnd-ai/cli@latest",
+        }),
+      },
+    });
+    await expect(runCli(["update", "check"], current.deps)).resolves.toBe(0);
+    expect(current.deps.output.messages[0]).toBe(
+      "Hivemnd CLI 9.8.7-test is up to date.",
+    );
+  });
+
+  it("installs, reports, and removes the selected tenant schedule with an exact config path", async () => {
+    const install = vi.fn(async (intervalMinutes: number) => ({
+      identity: "tenant-id",
+      installed: true,
+      active: true,
+      intervalMinutes,
+    }));
+    const status = vi.fn(async () => ({
+      identity: "tenant-id",
+      installed: true,
+      active: true,
+      intervalMinutes: 15,
+    }));
+    const remove = vi.fn(async () => ({
+      identity: "tenant-id",
+      installed: false,
+      active: false,
+      intervalMinutes: 15,
+    }));
+    const scheduleManagerFactory = vi.fn(() => ({ install, status, remove }));
+    const { temp, deps } = await setup({ scheduleManagerFactory });
+    const selectedPath = join(temp.path, "explicit-config.json");
+    await writeJson(selectedPath, config(temp.path));
+
+    await expect(
+      runCli(
+        ["--config", selectedPath, "schedule", "install", "--interval", "30"],
+        deps,
+      ),
+    ).resolves.toBe(0);
+    expect(scheduleManagerFactory).toHaveBeenCalledWith({
+      apiUrl: "https://shared.hivemnd.cloud/eigen",
+      configPath: selectedPath,
+    });
+    expect(install).toHaveBeenCalledWith(30);
+    await expect(
+      runCli(["--config", selectedPath, "schedule", "status"], deps),
+    ).resolves.toBe(0);
+    await expect(
+      runCli(["--config", selectedPath, "schedule", "remove"], deps),
+    ).resolves.toBe(0);
+    expect(deps.output.messages).toContain(
+      "schedule tenant-id: installed, active, every 30 minute(s)",
+    );
+    expect(deps.output.messages).toContain(
+      "schedule tenant-id: installed, active, every 15 minute(s)",
+    );
+    expect(deps.output.messages).toContain("schedule tenant-id: removed");
+
+    for (const interval of ["0", "1.5", "1441", "invalid"]) {
+      await expect(
+        runCli(["schedule", "install", "--interval", interval], deps),
+      ).resolves.toBe(1);
+    }
+
+    const relativeConfig = "relative-config.json";
+    await writeJson(join(temp.path, relativeConfig), config(temp.path));
+    await expect(
+      runCli(["--config", relativeConfig, "schedule", "status"], deps),
+    ).resolves.toBe(0);
+    expect(scheduleManagerFactory).toHaveBeenLastCalledWith({
+      apiUrl: "https://shared.hivemnd.cloud/eigen",
+      configPath: join(temp.path, relativeConfig),
+    });
+
+    const notInstalled = await setup();
+    await expect(
+      runCli(["schedule", "status"], notInstalled.deps),
+    ).resolves.toBe(0);
+    expect(notInstalled.deps.output.messages).toContain(
+      "schedule test: not installed, inactive, every 15 minute(s)",
+    );
+  });
+
   it("prints the injected package version without loading configuration", async () => {
     const { deps } = await setup({
       configRepositoryFactory: () => {
@@ -812,7 +1036,21 @@ describe("command shell", () => {
     expect(defaultDependencies.clientPlatform).toBe(
       `${process.platform}-${process.arch}`,
     );
-    expect(defaultDependencies.clientVersion).toBe("0.1.3");
+    expect(defaultDependencies.clientVersion).toBe("0.2.0");
+    expect(
+      defaultDependencies.scheduleManagerFactory({
+        apiUrl: "https://shared.hivemnd.cloud/eigen",
+        configPath: join(temp.path, "config.json"),
+      }),
+    ).toBeDefined();
+    expect(resolveUserId(() => 501)).toBe(501);
+    expect(resolveUserId(undefined)).toBe(0);
+    expect(resolveExecutablePath("/usr/local/bin/hivemnd")).toBe(
+      "/usr/local/bin/hivemnd",
+    );
+    expect(resolveExecutablePath(undefined)).toBe(
+      join(process.cwd(), "hivemnd"),
+    );
     const defaultPath = createProgram({ ...deps, environment: {} }).opts<{
       config: string;
     }>().config;

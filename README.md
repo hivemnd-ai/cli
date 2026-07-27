@@ -83,8 +83,25 @@ hivemnd sync --destination api-codex --destination web-claude --apply
 
 Running the command again fetches the latest authorized release, compares it
 with the local ownership ledgers, and applies only required changes. There is no
-background daemon in this release; recurring synchronization should invoke
-`hivemnd sync --apply` from the team's chosen scheduler.
+background daemon or persistent connection. To run the same synchronization
+periodically for the current config, install the native user-level scheduler:
+
+```sh
+hivemnd schedule install
+hivemnd schedule install --interval 30
+hivemnd schedule status
+hivemnd schedule remove
+```
+
+The default interval is 15 minutes. macOS uses a LaunchAgent and Linux uses a
+systemd user timer; Windows intentionally reports the Task Scheduler command
+that an administrator must configure. Every schedule is isolated by the exact
+tenant URL and absolute config path, can be installed again safely, and invokes
+the installed executable as `hivemnd --config <absolute-path> sync --apply`.
+It stores no token. Logs and minimal scheduler metadata live under
+`$HIVEMND_HOME/logs` and `$HIVEMND_HOME/schedules` (normally `~/.hivemnd`) with
+private permissions. Authentication still comes from Keychain or the scheduled
+process environment at execution time.
 
 To adopt skills already present in a destination, preview and then apply the
 explicit adoption mode:
@@ -124,8 +141,10 @@ backend responsibility, not a CLI feature.
 ## Synchronization safety
 
 - Dry-run is the default; local writes require `--apply`.
-- Manifests are schema- and expiry-checked. Downloads are size- and SHA-256-
-  checked before planning begins.
+- Manifests are schema- and expiry-checked. A manifest's required
+  `minimum_client_version` is validated as SemVer and enforced before any
+  artifact download, plan or write. Downloads are size- and SHA-256-checked
+  before planning begins.
 - Remote content paths must remain on the configured Hivemnd origin.
 - Destination paths must remain inside their configured root and cannot traverse
   symlinks or the reserved `.hivemnd` namespace.
@@ -143,6 +162,26 @@ Manifest signature verification remains unimplemented until the backend
 signing-key distribution and canonicalization contract is approved. TLS,
 authorization, same-origin downloads and local hash verification are the active
 controls.
+
+## CLI updates
+
+At most once per day, ordinary successful commands query the public npm
+metadata endpoint for the latest stable `@hivemnd-ai/cli` version. The check is
+advisory, times out quickly, and never makes the requested command fail. Its
+private cache is `$HIVEMND_HOME/update-check.json`. When an update exists, the
+CLI prints the notice after the command's normal output.
+
+Check explicitly at any time:
+
+```sh
+hivemnd update check
+```
+
+The CLI never changes its own installation. To accept an available update, run:
+
+```sh
+npm install --global @hivemnd-ai/cli@latest
+```
 
 ## Development
 

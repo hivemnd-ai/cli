@@ -7,6 +7,9 @@
 - Keep authentication behind `TokenStore`; never persist credentials in the repository or ordinary config files.
 - Synchronization is dry-run by default. Any local mutation requires an explicit `--apply` flag.
 - Treat remote content as untrusted: validate schemas, hashes, and destination boundaries before writing.
+- Enforce a manifest's `minimum_client_version` before downloading artifacts or preparing a synchronization plan.
+- Keep update discovery advisory and non-mutating. Network or cache failures must never break the user's requested command.
+- Periodic sync must use native user-level schedulers, an absolute executable and config path, and the explicit `sync --apply` command. Isolate schedules by tenant plus config, and never persist tokens in scheduler definitions or metadata.
 
 ## Quality gates
 

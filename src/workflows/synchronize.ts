@@ -3,6 +3,8 @@ import { asHivemndError, HivemndError } from "../errors.js";
 import { SyncApplier } from "../sync/applier.js";
 import { SyncPlanner } from "../sync/planner.js";
 import { SyncPreparer } from "../sync/preparer.js";
+import { compareSemver, parseSemver } from "../version/semver.js";
+import { UPDATE_COMMAND } from "../update/daily-update-checker.js";
 
 export interface SynchronizationOptions {
   readonly dryRun: boolean;
@@ -24,6 +26,10 @@ export async function synchronize(
   const { dependencies } = context;
   const { config, token, client } = await context.bootstrap();
   const manifest = await client.manifest(token.value);
+  assertCompatibleClient(
+    dependencies.clientVersion,
+    manifest.minimumClientVersion,
+  );
   const prepared = await new SyncPreparer().prepare(
     manifest,
     token.value,
@@ -72,5 +78,21 @@ export async function synchronize(
   } catch (error: unknown) {
     const failure = asHivemndError(error);
     dependencies.output.write(`receipt: deferred (${failure.code})`);
+  }
+}
+
+function assertCompatibleClient(
+  installedVersion: string,
+  minimumVersion: string,
+): void {
+  if (
+    !parseSemver(installedVersion) ||
+    !parseSemver(minimumVersion) ||
+    compareSemver(installedVersion, minimumVersion) < 0
+  ) {
+    throw new HivemndError(
+      "CLIENT_UPDATE_REQUIRED",
+      `Hivemnd CLI ${minimumVersion} or newer is required; installed: ${installedVersion}. Run: ${UPDATE_COMMAND}`,
+    );
   }
 }

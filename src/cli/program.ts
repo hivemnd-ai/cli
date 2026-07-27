@@ -7,6 +7,8 @@ import { registerDoctorCommand } from "../commands/doctor.js";
 import { registerSourceCommands } from "../commands/sources.js";
 import { registerStatusCommand } from "../commands/status.js";
 import { registerSyncCommand } from "../commands/sync.js";
+import { registerScheduleCommands } from "../commands/schedule.js";
+import { registerUpdateCommand } from "../commands/update.js";
 import type { RuntimeDependencies } from "../runtime/dependencies.js";
 import { createCliContext } from "./context.js";
 
@@ -34,6 +36,8 @@ export function createProgram(dependencies: RuntimeDependencies): Command {
   registerDoctorCommand(program, context);
   registerSyncCommand(program, context);
   registerSourceCommands(program, context);
+  registerScheduleCommands(program, context);
+  registerUpdateCommand(program, context);
 
   return program;
 }
