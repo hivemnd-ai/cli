@@ -66,6 +66,27 @@ describe("download preparation", () => {
 });
 
 describe("filesystem safety and ownership ledger", () => {
+  it("propagates unexpected filesystem errors while resolving file modes", async () => {
+    const temp = await temporaryDirectory();
+    cleanups.push(temp.cleanup);
+    const adapter = new FilesystemAgentAdapter(
+      "codex-test",
+      "codex",
+      join(temp.path, "agent"),
+      join(temp.path, ".hivemnd/codex-test/ownership.json"),
+      join(temp.path, ".hivemnd"),
+    );
+    const internals = adapter as unknown as {
+      existingMode(path: string): Promise<number>;
+    };
+
+    await expect(
+      internals.existingMode(`/${"x".repeat(5_000)}`),
+    ).rejects.toMatchObject({
+      code: "ENAMETOOLONG",
+    });
+  });
+
   it("writes binary content atomically and persists a validated v2 ledger", async () => {
     const temp = await temporaryDirectory();
     cleanups.push(temp.cleanup);

@@ -1,4 +1,13 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import {
+  chmod,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { z } from "zod";
 import {
@@ -70,6 +79,18 @@ export class ConfigRepository {
     }
   }
 
+  async loadOptional(path: string): Promise<HivemndConfig | undefined> {
+    try {
+      const contents = await readFile(this.absolute(path), "utf8");
+      return configSchema.parse(JSON.parse(contents) as unknown);
+    } catch (error: unknown) {
+      if (isNodeError(error) && error.code === "ENOENT") return undefined;
+      throw new HivemndError("CONFIG_INVALID", `Cannot load config: ${path}`, {
+        cause: error,
+      });
+    }
+  }
+
   async create(
     path: string,
     config: HivemndConfig,
@@ -78,19 +99,24 @@ export class ConfigRepository {
     const parsed = configSchema.parse(config);
     const destination = this.absolute(path);
     await mkdir(dirname(destination), { recursive: true });
+    const temporary = `${destination}.hivemnd-${randomUUID()}.tmp`;
     try {
-      await writeFile(destination, `${JSON.stringify(parsed, null, 2)}\n`, {
-        encoding: "utf8",
-        mode: 0o600,
-        flag: overwrite ? "w" : "wx",
-      });
-    } catch (error: unknown) {
-      if (isNodeError(error) && error.code === "EEXIST") {
+      if (!overwrite && (await exists(destination))) {
         throw new HivemndError(
           "CONFIG_EXISTS",
           `Config already exists: ${path}; pass --force to replace it`,
         );
       }
+      await writeFile(temporary, `${JSON.stringify(parsed, null, 2)}\n`, {
+        encoding: "utf8",
+        mode: 0o600,
+        flag: "wx",
+      });
+      await chmod(temporary, 0o600);
+      await rename(temporary, destination);
+      await chmod(destination, 0o600);
+    } catch (error: unknown) {
+      await rm(temporary, { force: true });
       throw error;
     }
   }
@@ -137,4 +163,14 @@ export async function loadConfig(
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch (error: unknown) {
+    if (isNodeError(error) && error.code === "ENOENT") return false;
+    throw error;
+  }
 }

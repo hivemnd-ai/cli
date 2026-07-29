@@ -10,14 +10,15 @@ export function registerSyncCommand(
   context: CliContext,
 ): void {
   program
-    .command("sync")
+    .command("sync [path]")
     .description("plan synchronization; writing requires --apply")
     .option(
       "--destination <name>",
-      "named destination to synchronize (repeatable; all by default)",
+      "named destination to synchronize (repeatable)",
       collect,
       [],
     )
+    .option("--all", "synchronize every configured destination", false)
     .option(
       "--adopt-existing",
       "claim identical unmanaged files after exact hash verification",
@@ -25,7 +26,19 @@ export function registerSyncCommand(
     )
     .option("--dry-run", "show plan without writing", false)
     .option("--apply", "apply the planned changes", false)
-    .action((options: SynchronizationOptions) => synchronize(options, context));
+    .action((path: string | undefined, options: SynchronizationOptions) => {
+      const explicitConfig = program.getOptionValueSource("config") === "cli";
+      return synchronize(
+        {
+          ...options,
+          ...(path ? { path } : {}),
+          all:
+            options.all === true ||
+            (explicitConfig && !path && options.destination.length === 0),
+        },
+        context,
+      );
+    });
 }
 
 function collect(value: string, previous: string[]): string[] {

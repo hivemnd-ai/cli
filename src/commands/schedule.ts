@@ -29,6 +29,17 @@ export function registerScheduleCommands(
       15,
     )
     .action(async (options: InstallOptions) => {
+      const { config, token } = await context.bootstrap();
+      const store = context.dependencies.tokenStoreFactory(config);
+      if (
+        token.source !== "keychain" ||
+        store.supportsPersistentStorage?.() !== true
+      ) {
+        throw new HivemndError(
+          "KEYCHAIN_UNAVAILABLE",
+          "Automatic sync requires a credential in persistent secure storage",
+        );
+      }
       const state = await (
         await manager(program, context)
       ).install(options.interval);

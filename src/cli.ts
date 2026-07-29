@@ -45,6 +45,9 @@ function isAutomaticUpdateEligible(args: readonly string[]): boolean {
     "sync",
     "sources",
     "schedule",
+    "init",
+    "workspace",
+    "org",
   ]);
   let skipConfigValue = false;
   for (const argument of args) {

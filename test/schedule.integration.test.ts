@@ -146,7 +146,9 @@ describe("periodic sync scheduler", () => {
     expect(service).toContain(
       'ExecStart="/home/felipe/.nvm/versions/node/v24/bin/node" "/opt/Hivemnd CLI/dist/index.js" "--config"',
     );
-    expect(service).toContain('tenant %% config.json" "sync" "--apply"');
+    expect(service).toContain(
+      'tenant %% config.json" "sync" "--all" "--apply"',
+    );
     expect(timer).toContain("OnUnitActiveSec=30min");
     expect(timer).toContain("Persistent=true");
     expect(service).not.toContain("token");

@@ -4,6 +4,7 @@ import type {
   DestinationConfig,
   HivemndConfig,
   Output,
+  PromptPort,
   TokenStore,
 } from "../domain.js";
 import type { ScheduleManager } from "../schedule/periodic-sync-scheduler.js";
@@ -11,6 +12,7 @@ import type { UpdateService } from "../update/daily-update-checker.js";
 
 export interface ConfigRepositoryPort {
   load(path: string): Promise<HivemndConfig>;
+  loadOptional(path: string): Promise<HivemndConfig | undefined>;
   create(
     path: string,
     config: HivemndConfig,
@@ -25,8 +27,13 @@ export interface ConfigRepositoryPort {
 
 export interface RuntimeDependencies {
   readonly cwd: string;
+  readonly homeDirectory: string;
+  readonly runtimeExecutablePath?: string;
+  readonly cliScriptPath?: string;
   readonly environment: NodeJS.ProcessEnv;
   readonly output: Output;
+  readonly prompt: PromptPort;
+  readonly readHookInput: () => Promise<string>;
   readonly configRepositoryFactory: (cwd: string) => ConfigRepositoryPort;
   readonly tokenStoreFactory: (config: HivemndConfig) => TokenStore;
   readonly apiClientFactory: (config: HivemndConfig) => ApiClient;

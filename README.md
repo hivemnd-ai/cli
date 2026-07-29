@@ -1,7 +1,7 @@
 # Hivemnd CLI
 
 Public Node/TypeScript client for downloading company-approved skills and
-installing them safely in Codex and Claude.
+installing them safely in Codex and Claude Code.
 
 ## Install and configure
 
@@ -10,20 +10,7 @@ npm install --global @hivemnd-ai/cli
 
 hivemnd --version
 
-hivemnd config init --api-url https://shared.hivemnd.cloud/eigen
-hivemnd config destination add codex-global \
-  --agent codex \
-  --scope root
-hivemnd config destination add codex-this-workspace \
-  --agent codex \
-  --scope workspace \
-  --path "$PWD"
-hivemnd config destination add claude-this-workspace \
-  --agent claude \
-  --scope workspace \
-  --path "$PWD"
-
-hivemnd login --enrollment-url 'https://shared.hivemnd.cloud/eigen/login?token=ONE_TIME_TOKEN'
+hivemnd init
 hivemnd doctor
 hivemnd sync
 hivemnd sync --apply
@@ -36,10 +23,38 @@ match both before publication. The public package is published with npm
 provenance and then installed from the registry in a clean directory as the
 final release check.
 
-The default config is `~/.hivemnd/config.json`. Override the state directory
-with `HIVEMND_HOME`, or only the config path with `HIVEMND_CONFIG` or
-`--config`. `config init` refuses to replace an existing config unless `--force`
-is explicit.
+Multi-organization routing lives in `~/.hivemnd/registry.json`; each organization
+keeps an isolated single-tenant config and Keychain credential. An existing
+`~/.hivemnd/config.json` remains valid and is referenced, not rewritten, when
+the registry is created. Override the state directory with `HIVEMND_HOME`.
+`HIVEMND_CONFIG` and `--config` preserve the exact-config workflow and are
+mutually exclusive with `--org`.
+
+`hivemnd init` is the recommended onboarding path. Paste the activation URL
+from the portal when prompted; the one-time token is captured without echoing
+it. Hivemnd previews the organization, every enabled AI tool, selected scopes,
+canonical workspace folders and automatic synchronization before changing
+anything. It then authenticates, commits the tenant profile and routing under an
+exclusive local lock, performs the first fail-safe sync when destinations exist,
+registers the Hivemnd MCP proxy and verified `SessionStart` context hook for the
+selected scopes, and optionally installs automatic sync. A later activation URL
+can add another organization. Headless
+use requires explicit flags and `--apply`; provide the activation URL through
+`HIVEMND_ACTIVATION_URL` instead of process arguments when possible.
+
+Use `hivemnd org list` to inspect local aliases and bindings. When several
+organizations are available, run the command in a connected workspace or pass
+an explicit alias:
+
+```sh
+hivemnd --org acme status
+hivemnd --org acme sync --all --apply
+```
+
+A canonical workspace belongs to exactly one organization. Codex and Claude
+Code can each have at most one global organization. Replacing a global binding
+requires interactive confirmation or `--replace-global`; modified
+Hivemnd-owned files block replacement.
 
 `apiUrl` is the complete deployment base, including any tenant path. Shared
 EIGEN therefore uses `https://shared.hivemnd.cloud/eigen`; a future dedicated
@@ -73,17 +88,44 @@ hivemnd config destination remove api-codex
 hivemnd config show
 ```
 
+For the common workspace flow, use the shorter idempotent command. It resolves
+the folder to an existing canonical directory and adds all AI tools enabled by
+the organization; repeat `--client` to choose an explicit subset.
+
+```sh
+hivemnd workspace add . --apply
+hivemnd workspace add ../api --org acme --client codex --apply
+hivemnd workspace remove ../api --apply
+hivemnd workspace list
+hivemnd workspace reassign . --org acme --apply
+```
+
+`workspace add` previews the host configuration paths it will touch. Interactive
+use confirms the preview; headless use requires `--apply`. The workspace
+binding, destinations, MCP registrations and `SessionStart` hooks are committed
+together and local configuration is restored if registration fails.
+`workspace remove` deletes only exact Hivemnd-owned artifacts and managed host
+entries. `workspace reassign` validates the target, moves registrations and
+synchronizes it within the same rollback boundary.
+
 Synchronize every configured destination, one destination, or a selected set:
 
 ```sh
-hivemnd sync --apply
+hivemnd sync --all --apply
+hivemnd sync --apply .
 hivemnd sync --destination api-codex --apply
 hivemnd sync --destination api-codex --destination web-claude --apply
 ```
 
+Without `--all` or `--destination`, `sync [path]` chooses the most-specific
+configured workspace containing that path (the current directory by default),
+then falls back to global destinations. `--all` preserves the former behavior
+of synchronizing every destination. Existing scheduled commands that explicitly
+pass `--config` remain compatible.
+
 Running the command again fetches the latest authorized release, compares it
 with the local ownership ledgers, and applies only required changes. There is no
-background daemon or persistent connection. To run the same synchronization
+persistent MCP process. To run the same synchronization
 periodically for the current config, install the native user-level scheduler:
 
 ```sh
@@ -98,12 +140,15 @@ systemd user timer; Windows intentionally reports the Task Scheduler command
 that an administrator must configure. Every schedule is isolated by the exact
 tenant URL and absolute config path, can be installed again safely, and invokes
 the absolute Node runtime with the absolute installed CLI script as
-`<node> <cli-script> --config <absolute-path> sync --apply`. This avoids relying
+`<node> <cli-script> --config <absolute-path> sync --all --apply`. This avoids relying
 on a shell, inherited `PATH`, or the npm bin shim's `/usr/bin/env node` shebang.
 It stores no token. Logs and minimal scheduler metadata live under
 `$HIVEMND_HOME/logs` and `$HIVEMND_HOME/schedules` (normally `~/.hivemnd`) with
-private permissions. Authentication still comes from Keychain or the scheduled
-process environment at execution time.
+private permissions. Automatic synchronization is installed only when the
+credential is available from persistent secure storage. macOS uses Keychain;
+Linux onboarding therefore skips automatic synchronization until an equivalent
+secure persistent credential adapter is configured. Tokens are never written
+to the schedule or config.
 
 An `active` schedule means the operating system loaded its timer; it does not
 guarantee that the last sync succeeded. `hivemnd schedule status` reports
@@ -138,6 +183,67 @@ Prefer `HIVEMND_TOKEN` over `--token` in automation so a long-lived token is not
 copied into shell history. The CLI identifies enrollment requests as
 `hivemnd_cli`; the backend must accept that value.
 
+## MCP connection
+
+`init` and `workspace add` register a stdio command for enabled AI tools. Codex
+or Claude Code starts `hivemnd mcp serve` as a child process for its session; it
+is not a daemon. The proxy resolves the tenant from the workspace or client
+global binding, reads its credential from secure storage and forwards MCP
+JSON-RPC to Rails. Backend `initialize` instructions, tool descriptions and
+schemas remain canonical.
+
+```sh
+hivemnd mcp status --client codex --workspace .
+hivemnd mcp status --client claude --workspace .
+```
+
+Codex uses `~/.codex/config.toml` globally and `<workspace>/.codex/config.toml`
+for workspace scope. Claude Code uses its user configuration for global and
+private workspace scopes; committed `.mcp.json` project scope is explicit.
+Registrations contain absolute Node and CLI paths, never activation URLs or
+bearer tokens, and Hivemnd changes only its owned entry.
+
+## Always-on organization context
+
+Authorized embedded documents under `context/<slug>.md` are not copied into
+workspace `.agents/context` or `.claude/context` directories, and their bodies
+are not appended to `AGENTS.md` or `CLAUDE.md`. Synchronization writes one
+private, versioned cache per organization:
+
+```text
+$HIVEMND_HOME/organizations/<organization-key>/always-context/
+  current.json
+  versions/<artifact-version-hash>.md
+```
+
+The pointer records exact artifact-version IDs, targets, sizes and SHA-256
+hashes. Directories use mode `0700`, files use `0600`, version files are
+immutable and pointer updates are atomic. Invalid metadata, unsafe files, hash
+or size drift, invalid UTF-8 and host output over 10,000 bytes fail closed;
+policy context is never silently truncated.
+
+Codex loads the cache from an owned `SessionStart` entry in
+`~/.codex/hooks.json` or `<workspace>/.codex/hooks.json`; Hivemnd never registers
+`SubagentStart`. Claude Code uses `~/.claude/settings.json` or private
+`<workspace>/.claude/settings.local.json`, and the injector emits nothing when
+Claude supplies an `agent_id`. Both hooks match `startup`, `resume`, `clear` and
+`compact` so context survives resumed and compacted primary sessions.
+
+Every managed hook declares whether it is global or belongs to one canonical
+workspace. If hosts execute global, workspace and nested-workspace hooks for the
+same session, only the hook for the most specific effective workspace binding
+emits; ancestor and global hooks stay silent. Outside a bound workspace only the
+effective global hook emits. Codex's inline-context threshold is 12,000 tokens,
+above Hivemnd's hard 10,000-byte output cap, so verified context cannot spill to
+a temporary file.
+
+At hook time the CLI reads only the hook payload, organization registry and
+verified local cache. It performs no MCP call, network request or credential
+lookup. Workspace bindings take precedence over each client's global binding.
+Unrelated hooks and user configuration are preserved. During migration an old
+managed block is removed from `AGENTS.md` or `CLAUDE.md` only when its ownership
+record and exact hash still match; unowned marker text is untouched.
+
 ## PostgreSQL sources
 
 `hivemnd sources list` calls `GET /api/v1/sources` and displays only the sources
@@ -162,7 +268,8 @@ backend responsibility, not a CLI feature.
 - Existing unmanaged files and locally modified managed files become conflicts;
   they are never overwritten or claimed silently.
 - Writes use private temporary files and atomic rename. A failed multi-
-  destination apply restores files and every affected ownership ledger.
+  destination apply restores files, every affected ownership ledger and the
+  active always-context pointer.
 - Ownership state is isolated under
   `~/.hivemnd/destinations/<origin-id>/<destination>/ownership.json`. It stores
   IDs and hashes, never credentials or artifact content.

@@ -28,6 +28,18 @@ export interface HivemndConfig {
   readonly destinations: readonly DestinationConfig[];
 }
 
+export interface ClientConfiguration {
+  readonly organization: { readonly name: string; readonly slug: string };
+  readonly enabledClients: readonly AgentKind[];
+}
+
+export interface PromptPort {
+  readonly interactive: boolean;
+  input(message: string): Promise<string>;
+  secret?(message: string): Promise<string>;
+  confirm(message: string, defaultValue?: boolean): Promise<boolean>;
+}
+
 export interface ManifestArtifact {
   readonly artifactVersionId: string;
   readonly logicalId: string;
@@ -74,6 +86,29 @@ export interface OwnershipEntry {
   readonly releaseId: string;
 }
 
+export interface ContextInstructionOwnership {
+  readonly blockSha256: string;
+  readonly prefix: "" | "\n" | "\n\n";
+  readonly createdFile: boolean;
+}
+
+export type ContextInstructionConflictReason =
+  | "managed-context-markers-invalid"
+  | "managed-context-block-unowned"
+  | "managed-context-block-missing"
+  | "managed-context-block-edited";
+
+export interface ContextInstructionChange {
+  readonly agent: AgentKind;
+  readonly destinationName: string;
+  readonly destination: string;
+  readonly kind: "create" | "update" | "remove" | "unchanged" | "conflict";
+  readonly conflictReason?: ContextInstructionConflictReason;
+  readonly expectedFileSha256: string | null;
+  readonly content?: Uint8Array;
+  readonly ownership?: ContextInstructionOwnership | null;
+}
+
 export interface SyncChange {
   readonly artifact?: Artifact;
   readonly owned?: OwnershipEntry;
@@ -98,6 +133,7 @@ export interface ResolvedToken {
 export interface TokenStore {
   get(): Promise<ResolvedToken | undefined>;
   save(token: string): Promise<void>;
+  supportsPersistentStorage?(): boolean;
 }
 
 export interface EnrollmentResult {
@@ -177,6 +213,8 @@ export interface SyncReceipt {
 }
 
 export interface ApiClient {
+  previewEnrollment(enrollmentToken: string): Promise<ClientConfiguration>;
+  clientConfiguration(token: string): Promise<ClientConfiguration>;
   manifest(token: string): Promise<SyncManifest>;
   exchangeEnrollment(
     enrollmentToken: string,
@@ -192,12 +230,22 @@ export interface AgentAdapter {
   readonly name: string;
   readonly kind: AgentKind;
   readonly root: string;
+  readonly instructionPath?: string | undefined;
   destination(relativePath: string): string;
   read(relativePath: string): Promise<Uint8Array | undefined>;
   write(relativePath: string, content: Uint8Array): Promise<void>;
   remove(relativePath: string): Promise<void>;
   readOwnership(): Promise<readonly OwnershipEntry[]>;
-  replaceOwnership(entries: readonly OwnershipEntry[]): Promise<void>;
+  readContextInstructionOwnership?(): Promise<
+    ContextInstructionOwnership | undefined
+  >;
+  readInstruction?(): Promise<Uint8Array | undefined>;
+  writeInstruction?(content: Uint8Array): Promise<void>;
+  removeInstruction?(): Promise<void>;
+  replaceOwnership(
+    entries: readonly OwnershipEntry[],
+    contextInstruction?: ContextInstructionOwnership | null,
+  ): Promise<void>;
 }
 
 export interface Output {

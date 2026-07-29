@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -21,6 +22,9 @@ import type {
   ManifestArtifact,
   TokenStore,
 } from "../src/domain.js";
+import { AlwaysContextCache } from "../src/context/always-context-cache.js";
+import { profileKey } from "../src/organizations/registry.js";
+import { prepared } from "./helpers.js";
 import {
   api,
   captureOutput,
@@ -60,6 +64,9 @@ async function setup(
   };
   const deps: RuntimeDependencies & { output: typeof output } = {
     cwd: temp.path,
+    homeDirectory: join(temp.path, "home"),
+    prompt: { interactive: false, input: vi.fn(), confirm: vi.fn() },
+    readHookInput: async () => "",
     configRepositoryFactory: (cwd) => new ConfigRepository(cwd),
     tokenStoreFactory: () => selectedStore,
     apiClientFactory: () => selectedApi,
@@ -336,6 +343,239 @@ describe("configuration commands", () => {
   });
 });
 
+describe("workspace onboarding command", () => {
+  it("adds all enabled AI tools to a canonical workspace idempotently and prints a shell-safe next step", async () => {
+    const { temp, deps } = await setup();
+    const workspace = join(temp.path, "my team's repo");
+    await mkdir(workspace);
+    const canonicalWorkspace = await realpath(workspace);
+
+    await expect(
+      runCli(["workspace", "add", "my team's repo", "--apply"], deps),
+    ).resolves.toBe(0);
+    await expect(
+      readFile(
+        join(canonicalWorkspace, ".agents/skills/team/SKILL.md"),
+        "utf8",
+      ),
+    ).resolves.toBe("# Team skill\n");
+    await expect(
+      readFile(
+        join(canonicalWorkspace, ".claude/skills/team/SKILL.md"),
+        "utf8",
+      ),
+    ).resolves.toBe("# Team skill\n");
+    await expect(
+      runCli(["workspace", "add", "my team's repo", "--apply"], deps),
+    ).resolves.toBe(0);
+
+    const saved = await new ConfigRepository(temp.path).load(
+      join(temp.path, ".hivemnd/config.json"),
+    );
+    expect(
+      saved.destinations.filter(
+        (destination) => destination.path === canonicalWorkspace,
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ agent: "codex", scope: "workspace" }),
+        expect.objectContaining({ agent: "claude", scope: "workspace" }),
+      ]),
+    );
+    expect(
+      saved.destinations.filter(
+        (destination) => destination.path === canonicalWorkspace,
+      ),
+    ).toHaveLength(2);
+    expect(deps.output.messages).toContain(
+      `Run hivemnd sync --apply '${canonicalWorkspace.replaceAll("'", `'"'"'`)}'`,
+    );
+  });
+
+  it("rejects missing workspaces and organizations without enabled AI tools without rewriting config", async () => {
+    const missing = await setup();
+    const before = await readFile(
+      join(missing.temp.path, ".hivemnd/config.json"),
+      "utf8",
+    );
+    await expect(
+      runCli(["workspace", "add", "missing"], missing.deps),
+    ).resolves.toBe(1);
+    expect(
+      await readFile(join(missing.temp.path, ".hivemnd/config.json"), "utf8"),
+    ).toBe(before);
+
+    const disabled = await setup({
+      selectedApi: {
+        ...api(),
+        clientConfiguration: async () => ({
+          organization: { name: "Eigen", slug: "eigen" },
+          enabledClients: [],
+        }),
+      },
+    });
+    await expect(
+      runCli(["workspace", "add", "."], disabled.deps),
+    ).resolves.toBe(1);
+    expect(disabled.deps.output.errors.at(-1)).toContain("no enabled AI tools");
+  });
+
+  it("supports an explicit AI tool subset and reports active automatic sync", async () => {
+    const { deps } = await setup({
+      scheduleManagerFactory: () => ({
+        install: vi.fn(),
+        status: async () => ({
+          identity: "x",
+          installed: true,
+          active: true,
+          intervalMinutes: 15,
+          lastRunFailed: false,
+          errorLogPath: "/x",
+        }),
+        remove: vi.fn(),
+      }),
+    });
+    await expect(
+      runCli(["workspace", "add", ".", "--client", "codex", "--apply"], deps),
+    ).resolves.toBe(0);
+    expect(deps.output.messages).toContain(
+      "Automatic sync will include this workspace.",
+    );
+
+    await expect(
+      runCli(["workspace", "add", ".", "--client", "unknown"], deps),
+    ).resolves.toBe(1);
+    await expect(
+      runCli(["workspace", "add", "--client", "codex", "--apply"], deps),
+    ).resolves.toBe(0);
+    const disabledApi = {
+      ...api(),
+      clientConfiguration: async () => ({
+        organization: { name: "Eigen", slug: "eigen" },
+        enabledClients: ["codex"] as const,
+      }),
+    };
+    const disabled = await setup({ selectedApi: disabledApi });
+    await expect(
+      runCli(["workspace", "add", ".", "--client", "claude"], disabled.deps),
+    ).resolves.toBe(1);
+  });
+});
+
+describe("init command", () => {
+  it("resumes an authenticated config non-interactively and performs the first all-destination sync", async () => {
+    const { deps } = await setup();
+    await expect(
+      runCli(
+        [
+          "init",
+          "--client",
+          "codex",
+          "--scope",
+          "codex=global",
+          "--automatic-sync",
+          "skip",
+          "--apply",
+        ],
+        deps,
+      ),
+    ).resolves.toBe(0);
+    expect(deps.output.messages).toContain("Connected to Eigen.");
+    expect(deps.output.messages).toContain("applied: 3 change(s)");
+  });
+
+  it("activates from the environment, configures repeated clients, and installs automatic sync", async () => {
+    let token: string | undefined;
+    const save = vi.fn(async (value: string) => {
+      token = value;
+    });
+    const install = vi.fn(async (intervalMinutes: number) => ({
+      identity: "x",
+      installed: true,
+      active: true,
+      intervalMinutes,
+      lastRunFailed: false,
+      errorLogPath: "/x",
+    }));
+    const { temp, deps } = await setup({
+      environment: {
+        HIVEMND_ACTIVATION_URL:
+          "https://shared.hivemnd.cloud/eigen/enroll?token=hidden",
+      },
+      selectedStore: {
+        get: async () =>
+          token ? { value: token, source: "keychain" as const } : undefined,
+        save,
+        supportsPersistentStorage: () => true,
+      },
+      scheduleManagerFactory: () => ({
+        install,
+        status: async () => ({
+          identity: "x",
+          installed: false,
+          active: false,
+          intervalMinutes: 15,
+          lastRunFailed: undefined,
+          errorLogPath: "/x",
+        }),
+        remove: vi.fn(),
+      }),
+    });
+    const freshConfig = join(temp.path, "fresh.json");
+    await expect(
+      runCli(
+        [
+          "--config",
+          freshConfig,
+          "init",
+          "--client",
+          "codex",
+          "--client",
+          "claude",
+          "--scope",
+          "codex=global",
+          "--scope",
+          "claude=skip",
+          "--automatic-sync",
+          "install",
+          "--adopt-existing",
+          "--apply",
+        ],
+        {
+          ...deps,
+          environment: {
+            HIVEMND_ACTIVATION_URL: deps.environment.HIVEMND_ACTIVATION_URL!,
+          },
+        },
+      ),
+    ).resolves.toBe(0);
+    expect(save).toHaveBeenCalledWith("enrolled-token");
+    expect(install).toHaveBeenCalledWith(15);
+    expect(deps.output.messages.join(" ")).not.toContain("hidden");
+
+    await expect(
+      runCli(["init", "--automatic-sync", "later"], deps),
+    ).resolves.toBe(1);
+  });
+
+  it("requires an explicit automatic-sync choice headlessly", async () => {
+    const { deps } = await setup({
+      selectedStore: {
+        get: async () => ({ value: "stored", source: "keychain" }),
+        save: vi.fn(),
+        supportsPersistentStorage: () => true,
+      },
+    });
+    await expect(
+      runCli(
+        ["init", "--client", "codex", "--scope", "codex=skip", "--apply"],
+        deps,
+      ),
+    ).resolves.toBe(1);
+    expect(deps.output.errors.at(-1)).toContain("--automatic-sync");
+  });
+});
+
 describe("authentication and diagnostics commands", () => {
   it("validates and stores direct and enrollment tokens without printing secrets", async () => {
     const save = vi.fn(async () => undefined);
@@ -458,14 +698,303 @@ describe("authentication and diagnostics commands", () => {
     expect(empty.deps.output.errors.at(-1)).toContain(
       "No synchronization destinations",
     );
-    await expect(runCli(["sync"], empty.deps)).resolves.toBe(1);
-    expect(empty.deps.output.errors.at(-1)).toContain(
-      "No synchronization destinations",
-    );
+    await expect(
+      runCli(["sync", "--all", "--apply"], empty.deps),
+    ).resolves.toBe(0);
+    expect(empty.deps.output.messages.at(-1)).toBe("applied: 0 change(s)");
+    empty.deps.output.messages.length = 0;
+    await expect(runCli(["sync", "--all"], empty.deps)).resolves.toBe(0);
+    expect(empty.deps.output.messages).toEqual([
+      "dry-run: 0 change(s); no destinations are configured",
+    ]);
+  });
+});
+
+describe("SessionStart context command", () => {
+  it("prints verified primary context and validates its managed invocation", async () => {
+    const setupResult = await setup();
+    const { temp, deps } = setupResult;
+    const stateDirectory = deps.environment.HIVEMND_HOME!;
+    const apiUrl = "https://shared.hivemnd.cloud/eigen";
+    const base = prepared("# Context\n");
+    const artifact = {
+      ...base.artifacts[0]!,
+      kind: "embedded_document" as const,
+      relativePath: "context/eigen.md",
+    };
+    const cache = new AlwaysContextCache({ stateDirectory, apiUrl });
+    await cache.apply(await cache.plan({ ...base, artifacts: [artifact] }));
+    await writeJson(join(stateDirectory, "registry.json"), {
+      version: 1,
+      profiles: [
+        {
+          key: profileKey(apiUrl),
+          alias: "eigen",
+          name: "EIGEN",
+          slug: "eigen",
+          apiUrl,
+          configPath: join(stateDirectory, "config.json"),
+        },
+      ],
+      workspaceBindings: [],
+      globalBindings: [
+        { client: "codex", organizationKey: profileKey(apiUrl) },
+      ],
+    });
+    await expect(
+      runCli(
+        [
+          "context",
+          "inject",
+          "--client",
+          "codex",
+          "--state-directory",
+          stateDirectory,
+          "--scope",
+          "global",
+          "--hivemnd-managed-hook",
+          "1",
+        ],
+        {
+          ...deps,
+          readHookInput: async () =>
+            JSON.stringify({
+              hook_event_name: "SessionStart",
+              source: "startup",
+              cwd: temp.path,
+            }),
+        },
+      ),
+    ).resolves.toBe(0);
+    expect(deps.output.messages).toContain("# Context\n");
+    const messageCount = deps.output.messages.length;
+    await expect(
+      runCli(
+        [
+          "context",
+          "inject",
+          "--client",
+          "claude",
+          "--state-directory",
+          stateDirectory,
+          "--scope",
+          "global",
+          "--hivemnd-managed-hook",
+          "1",
+        ],
+        {
+          ...deps,
+          readHookInput: async () =>
+            JSON.stringify({
+              hook_event_name: "SessionStart",
+              source: "startup",
+              cwd: temp.path,
+              agent_id: "subagent",
+            }),
+        },
+      ),
+    ).resolves.toBe(0);
+    expect(deps.output.messages).toHaveLength(messageCount);
+    await expect(
+      runCli(
+        [
+          "context",
+          "inject",
+          "--client",
+          "codex",
+          "--state-directory",
+          stateDirectory,
+          "--scope",
+          "workspace",
+          "--workspace",
+          temp.path,
+          "--hivemnd-managed-hook",
+          "1",
+        ],
+        {
+          ...deps,
+          readHookInput: async () =>
+            JSON.stringify({
+              hook_event_name: "SessionStart",
+              source: "startup",
+              cwd: temp.path,
+            }),
+        },
+      ),
+    ).resolves.toBe(0);
+    expect(deps.output.messages).toHaveLength(messageCount);
+
+    for (const args of [
+      [
+        "context",
+        "inject",
+        "--client",
+        "other",
+        "--state-directory",
+        stateDirectory,
+        "--scope",
+        "global",
+        "--hivemnd-managed-hook",
+        "1",
+      ],
+      [
+        "context",
+        "inject",
+        "--client",
+        "codex",
+        "--state-directory",
+        "relative",
+        "--scope",
+        "global",
+        "--hivemnd-managed-hook",
+        "1",
+      ],
+      [
+        "context",
+        "inject",
+        "--client",
+        "codex",
+        "--state-directory",
+        stateDirectory,
+        "--scope",
+        "global",
+        "--hivemnd-managed-hook",
+        "2",
+      ],
+      [
+        "context",
+        "inject",
+        "--client",
+        "codex",
+        "--state-directory",
+        stateDirectory,
+        "--scope",
+        "other",
+        "--hivemnd-managed-hook",
+        "1",
+      ],
+      [
+        "context",
+        "inject",
+        "--client",
+        "codex",
+        "--state-directory",
+        stateDirectory,
+        "--scope",
+        "workspace",
+        "--hivemnd-managed-hook",
+        "1",
+      ],
+    ]) {
+      await expect(runCli(args, deps)).resolves.toBe(1);
+    }
   });
 });
 
 describe("sync command", () => {
+  it("reports missing adapters and ignores unowned legacy instruction markers", async () => {
+    const missingAdapters = await setup({ adapterFactory: () => [] });
+    await expect(
+      runCli(["sync", "--all", "--apply"], missingAdapters.deps),
+    ).resolves.toBe(1);
+    expect(missingAdapters.deps.output.errors.at(-1)).toContain(
+      "No synchronization destinations",
+    );
+
+    const contextContent = Buffer.from("# Always context\n");
+    const baseApi = api();
+    const context = await setup({
+      selectedApi: {
+        ...baseApi,
+        manifest: async () => {
+          const base = await baseApi.manifest("token");
+          return {
+            ...base,
+            artifacts: [
+              {
+                ...base.artifacts[0]!,
+                kind: "embedded_document",
+                relativePath: "context/company.md",
+                size: contextContent.byteLength,
+                sha256: createHash("sha256")
+                  .update(contextContent)
+                  .digest("hex"),
+              },
+            ],
+          };
+        },
+        download: async () => contextContent,
+      },
+    });
+    const codexWorkspace = context.selectedConfig.destinations.find(
+      ({ agent }) => agent === "codex",
+    )!.path!;
+    await mkdir(codexWorkspace, { recursive: true });
+    await writeFile(
+      join(codexWorkspace, "AGENTS.md"),
+      "<!-- BEGIN HIVEMND MANAGED ALWAYS CONTEXT -->\nincomplete",
+    );
+
+    await expect(runCli(["sync", "--all"], context.deps)).resolves.toBe(0);
+    expect(context.deps.output.messages.join("\n")).not.toContain(
+      "managed-context-markers-invalid",
+    );
+    expect(context.deps.output.messages.at(-1)).toContain(
+      "1 change(s); pass --apply",
+    );
+    const legacyBlock =
+      "<!-- BEGIN HIVEMND MANAGED ALWAYS CONTEXT -->\n# Legacy\n<!-- END HIVEMND MANAGED ALWAYS CONTEXT -->";
+    await writeFile(join(codexWorkspace, "AGENTS.md"), legacyBlock);
+    const [codexAdapter] = context.deps.adapterFactory(context.selectedConfig, [
+      "codex-workspace",
+    ]);
+    await codexAdapter?.replaceOwnership([], {
+      blockSha256: createHash("sha256").update(legacyBlock).digest("hex"),
+      prefix: "",
+      createdFile: true,
+    });
+    context.deps.output.messages.length = 0;
+    await expect(runCli(["sync", "--all"], context.deps)).resolves.toBe(0);
+    expect(context.deps.output.messages.join("\n")).toContain(
+      "remove    codex-workspace",
+    );
+    await writeFile(
+      join(codexWorkspace, "AGENTS.md"),
+      legacyBlock.replace("# Legacy", "# Locally edited"),
+    );
+    context.deps.output.messages.length = 0;
+    await expect(
+      runCli(
+        [
+          "--config",
+          join(context.temp.path, ".hivemnd/config.json"),
+          "sync",
+          "--all",
+        ],
+        { ...context.deps, environment: {} },
+      ),
+    ).resolves.toBe(0);
+    expect(context.deps.output.messages.join("\n")).toContain(
+      "managed-context-block-edited",
+    );
+  });
+
+  it("keeps legacy scheduled --config sync --apply invocations synchronized across all destinations", async () => {
+    const { temp, deps } = await setup();
+    const configPath = join(temp.path, ".hivemnd/config.json");
+
+    await expect(
+      runCli(["--config", configPath, "sync", "--apply"], deps),
+    ).resolves.toBe(0);
+
+    expect(deps.output.messages).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^create\s+codex-workspace/),
+        expect.stringMatching(/^create\s+claude-workspace/),
+      ]),
+    );
+  });
+
   it("rejects an incompatible minimum client version before downloading or planning", async () => {
     const selectedApi = api();
     const download = vi.fn((token: string, artifact: ManifestArtifact) =>
@@ -483,24 +1012,39 @@ describe("sync command", () => {
       },
     });
 
-    await expect(runCli(["sync", "--apply"], deps)).resolves.toBe(1);
+    await expect(runCli(["sync", "--all", "--apply"], deps)).resolves.toBe(1);
     expect(download).not.toHaveBeenCalled();
     expect(deps.output.errors).toEqual([
       "[CLIENT_UPDATE_REQUIRED] Hivemnd CLI 2.0.0 or newer is required; installed: 1.2.3. Run: npm install --global @hivemnd-ai/cli@latest",
     ]);
   });
 
+  it("rejects --all combined with a path or named destination", async () => {
+    const { deps } = await setup();
+    await expect(runCli(["sync", ".", "--all"], deps)).resolves.toBe(1);
+    await expect(
+      runCli(["sync", "--all", "--destination", "codex-workspace"], deps),
+    ).resolves.toBe(1);
+  });
+
   it("is a dry run by default and recognizes explicit --dry-run", async () => {
     const first = await setup();
-    await expect(runCli(["sync"], first.deps)).resolves.toBe(0);
+    const contextualWorkspace = first.selectedConfig.destinations[0]!.path!;
+    await mkdir(contextualWorkspace, { recursive: true });
+    await expect(
+      runCli(["sync", contextualWorkspace], first.deps),
+    ).resolves.toBe(0);
+    await expect(runCli(["sync", "--all"], first.deps)).resolves.toBe(0);
     expect(first.deps.output.messages.at(-1)).toBe(
       "dry-run: 2 change(s); pass --apply to write",
     );
     const second = await setup();
-    await expect(runCli(["sync", "--dry-run"], second.deps)).resolves.toBe(0);
+    await expect(
+      runCli(["sync", "--all", "--dry-run"], second.deps),
+    ).resolves.toBe(0);
     expect(second.deps.output.messages.at(-1)).toContain("dry-run");
     await expect(
-      runCli(["sync", "--dry-run", "--apply"], second.deps),
+      runCli(["sync", "--all", "--dry-run", "--apply"], second.deps),
     ).resolves.toBe(1);
   });
 
@@ -513,7 +1057,7 @@ describe("sync command", () => {
       "local",
       "utf8",
     );
-    await expect(runCli(["sync"], deps)).resolves.toBe(0);
+    await expect(runCli(["sync", "--all"], deps)).resolves.toBe(0);
     expect(
       deps.output.messages.some((message) =>
         /^conflict\s+codex-workspace \(codex\) .*unmanaged-existing-file/.test(
@@ -603,7 +1147,7 @@ describe("sync command", () => {
   it("applies idempotently and submits content-free best-effort receipts", async () => {
     const selectedApi = api();
     const { deps, selectedConfig } = await setup({ selectedApi });
-    await expect(runCli(["sync", "--apply"], deps)).resolves.toBe(0);
+    await expect(runCli(["sync", "--all", "--apply"], deps)).resolves.toBe(0);
     expect(deps.output.messages.slice(-2)).toEqual([
       "applied: 2 change(s)",
       "receipt: accepted",
@@ -623,7 +1167,7 @@ describe("sync command", () => {
     ).resolves.toBe("# Team skill\n");
 
     deps.output.messages.length = 0;
-    await expect(runCli(["sync", "--apply"], deps)).resolves.toBe(0);
+    await expect(runCli(["sync", "--all", "--apply"], deps)).resolves.toBe(0);
     expect(deps.output.messages).toContain("applied: 0 change(s)");
 
     const deferred = await setup({
@@ -632,7 +1176,9 @@ describe("sync command", () => {
         receipt: async () => Promise.reject(new Error("offline")),
       },
     });
-    await expect(runCli(["sync", "--apply"], deferred.deps)).resolves.toBe(0);
+    await expect(
+      runCli(["sync", "--all", "--apply"], deferred.deps),
+    ).resolves.toBe(0);
     expect(deferred.deps.output.messages.at(-1)).toBe(
       "receipt: deferred (SYNC_FAILED)",
     );
@@ -912,7 +1458,14 @@ describe("command shell", () => {
       errorLogPath: "/tmp/tenant.error.log",
     }));
     const scheduleManagerFactory = vi.fn(() => ({ install, status, remove }));
-    const { temp, deps } = await setup({ scheduleManagerFactory });
+    const { temp, deps } = await setup({
+      scheduleManagerFactory,
+      selectedStore: {
+        get: async () => ({ value: "stored", source: "keychain" }),
+        save: async () => undefined,
+        supportsPersistentStorage: () => true,
+      },
+    });
     const selectedPath = join(temp.path, "explicit-config.json");
     await writeJson(selectedPath, config(temp.path));
 
@@ -966,6 +1519,12 @@ describe("command shell", () => {
     );
   });
 
+  it("refuses automatic sync when credentials are not persistently secured", async () => {
+    const { deps } = await setup();
+    await expect(runCli(["schedule", "install"], deps)).resolves.toBe(1);
+    expect(deps.output.errors.at(-1)).toContain("persistent secure storage");
+  });
+
   it("prints the injected package version without loading configuration", async () => {
     const { deps } = await setup({
       configRepositoryFactory: () => {
@@ -1008,6 +1567,7 @@ describe("command shell", () => {
       ...deps,
       configRepositoryFactory: () => ({
         load: async () => Promise.reject("unknown"),
+        loadOptional: async () => Promise.reject("unknown"),
       }),
     };
     await expect(
@@ -1048,7 +1608,7 @@ describe("command shell", () => {
     expect(defaultDependencies.clientPlatform).toBe(
       `${process.platform}-${process.arch}`,
     );
-    expect(defaultDependencies.clientVersion).toBe("0.2.2");
+    expect(defaultDependencies.clientVersion).toBe("0.3.0");
     expect(
       defaultDependencies.scheduleManagerFactory({
         apiUrl: "https://shared.hivemnd.cloud/eigen",

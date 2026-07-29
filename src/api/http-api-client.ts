@@ -7,6 +7,7 @@ import {
   sourceAdapterKinds,
   sourceStatuses,
   type ApiClient,
+  type ClientConfiguration,
   type EnrollmentClient,
   type EnrollmentResult,
   type ManifestArtifact,
@@ -25,6 +26,8 @@ import {
 
 export const apiPaths = {
   enrollment: "api/v1/enrollments/exchange",
+  enrollmentPreview: "api/v1/enrollments/preview",
+  clientConfiguration: "api/v1/client-configuration",
   manifest: "api/v1/sync/manifest",
   receipts: "api/v1/sync/receipts",
   sources: "api/v1/sources",
@@ -63,6 +66,15 @@ const enrollmentSchema = z.object({
   access_token: z.string().min(1),
   installation_id: z.string().min(1),
 });
+
+const clientConfigurationSchema = z
+  .object({
+    organization: z
+      .object({ name: z.string().min(1), slug: z.string().min(1) })
+      .strict(),
+    enabled_clients: z.array(z.enum(agentKinds)),
+  })
+  .strict();
 
 const sourceIdentitySchema = z
   .object({
@@ -130,6 +142,27 @@ export class HttpApiClient implements ApiClient {
     private readonly now: () => Date = () => new Date(),
   ) {
     this.baseUrl = tenantBaseUrl(baseUrl);
+  }
+
+  async previewEnrollment(
+    enrollmentToken: string,
+  ): Promise<ClientConfiguration> {
+    const response = await this.request(
+      apiPaths.enrollmentPreview,
+      undefined,
+      "POST",
+      { enrollment_token: enrollmentToken },
+    );
+    return this.parseClientConfiguration(response);
+  }
+
+  async clientConfiguration(token: string): Promise<ClientConfiguration> {
+    const response = await this.request(
+      apiPaths.clientConfiguration,
+      token,
+      "GET",
+    );
+    return this.parseClientConfiguration(response);
   }
 
   async manifest(token: string): Promise<SyncManifest> {
@@ -280,6 +313,24 @@ export class HttpApiClient implements ApiClient {
     });
   }
 
+  private async parseClientConfiguration(
+    response: Response,
+  ): Promise<ClientConfiguration> {
+    try {
+      const value = clientConfigurationSchema.parse(await response.json());
+      return {
+        organization: value.organization,
+        enabledClients: value.enabled_clients,
+      };
+    } catch (error: unknown) {
+      throw new HivemndError(
+        "CLIENT_CONFIGURATION_INVALID",
+        "Invalid client configuration response",
+        { cause: error },
+      );
+    }
+  }
+
   private async request(
     path: string,
     token: string | undefined,
@@ -302,6 +353,12 @@ export class HttpApiClient implements ApiClient {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        throw new HivemndError(
+          "AUTH_MISSING",
+          "Hivemnd authentication is missing or no longer valid",
+        );
+      }
       throw new HivemndError(
         "HTTP_FAILED",
         `Hivemnd API request failed (${response.status})`,

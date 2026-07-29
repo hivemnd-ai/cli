@@ -146,10 +146,10 @@ describe("PostgreSQL source API adapter", () => {
     const unauthorizedClient = new HttpApiClient(unauthorized.url);
     await expect(
       unauthorizedClient.listSources("revoked"),
-    ).rejects.toMatchObject({ code: "HTTP_FAILED" });
+    ).rejects.toMatchObject({ code: "AUTH_MISSING" });
     await expect(
       unauthorizedClient.inspectSourceSchema("revoked", sourceId),
-    ).rejects.toMatchObject({ code: "HTTP_FAILED" });
+    ).rejects.toMatchObject({ code: "AUTH_MISSING" });
 
     const invalidList = await serve((_request, response) =>
       response.end(
