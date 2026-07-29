@@ -174,7 +174,11 @@ export class ClaudeMcpRegistration implements McpRegistration {
     const path = claudeJsonPath(scope);
     const existing = readJsonPath(parse(current.content) as unknown, path);
     const value = claudeDefinition(definition);
-    if (existing !== undefined && !sameDefinition(existing, value)) {
+    if (
+      existing !== undefined &&
+      !sameDefinition(existing, value) &&
+      !looksLikeHivemndDefinition(existing)
+    ) {
       throw registrationConflict(
         "Claude Code already has an unowned hivemnd MCP entry in this scope",
       );
@@ -512,13 +516,40 @@ function sameDefinition(left: unknown, right: unknown): boolean {
 }
 
 function looksLikeHivemndDefinition(value: unknown): boolean {
-  if (!isRecord(value) || typeof value.command !== "string") return false;
+  if (
+    !isRecord(value) ||
+    typeof value.command !== "string" ||
+    !absoluteSafePath(value.command)
+  ) {
+    return false;
+  }
   if (!Array.isArray(value.args) || !value.args.every(isString)) return false;
-  const mcp = value.args.indexOf("mcp");
-  if (mcp === -1 || value.args[mcp + 1] !== "serve") return false;
-  const client = value.args.indexOf("--client", mcp + 2);
-  if (client !== -1 && value.args[client + 1] !== "claude") return false;
-  return JSON.stringify(value.env) === JSON.stringify(CLAUDE_MANAGED_ENV);
+  if (
+    value.args.length !== 5 ||
+    !absoluteSafePath(value.args[0] ?? "") ||
+    value.args[1] !== "mcp" ||
+    value.args[2] !== "serve" ||
+    value.args[3] !== "--client" ||
+    value.args[4] !== "claude"
+  ) {
+    return false;
+  }
+  if (!isRecord(value.env)) return false;
+  const environmentKeys = Object.keys(value.env);
+  if (
+    value.env.HIVEMND_MANAGED_MCP !== CLAUDE_MANAGED_ENV.HIVEMND_MANAGED_MCP ||
+    environmentKeys.some(
+      (key) => key !== "HIVEMND_MANAGED_MCP" && key !== "HIVEMND_HOME",
+    )
+  ) {
+    return false;
+  }
+  return (
+    environmentKeys.length === 1 ||
+    (environmentKeys.length === 2 &&
+      typeof value.env.HIVEMND_HOME === "string" &&
+      absoluteSafePath(value.env.HIVEMND_HOME))
+  );
 }
 
 function isString(value: unknown): value is string {

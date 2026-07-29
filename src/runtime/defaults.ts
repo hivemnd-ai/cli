@@ -19,7 +19,7 @@ import { DailyUpdateChecker } from "../update/daily-update-checker.js";
 import type { RuntimeDependencies } from "./dependencies.js";
 
 const stateDirectory = process.env.HIVEMND_HOME ?? join(homedir(), ".hivemnd");
-const clientVersion = "0.3.0";
+const clientVersion = "0.3.1";
 
 export const defaultDependencies: RuntimeDependencies = {
   cwd: process.cwd(),
