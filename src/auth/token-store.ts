@@ -54,6 +54,10 @@ export class MacOsKeychain implements Keychain {
     ]);
   }
 
+  available(): boolean {
+    return this.platform === "darwin";
+  }
+
   private ensureAvailable(): void {
     if (this.platform !== "darwin") {
       throw new HivemndError(
@@ -112,5 +116,9 @@ export class SecureTokenStore implements TokenStore {
       throw new HivemndError("AUTH_MISSING", "The token cannot be empty");
     }
     return this.keychain.save(token);
+  }
+
+  supportsPersistentStorage(): boolean {
+    return this.keychain instanceof MacOsKeychain && this.keychain.available();
   }
 }

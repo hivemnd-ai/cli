@@ -153,7 +153,7 @@ export class PeriodicSyncScheduler {
     ) {
       throw new HivemndError(
         "SCHEDULE_UNSUPPORTED",
-        "Periodic sync is supported on macOS LaunchAgents and Linux systemd user timers. On Windows, run `hivemnd --config <absolute-path> sync --apply` from Task Scheduler.",
+        "Periodic sync is supported on macOS LaunchAgents and Linux systemd user timers. On Windows, run `hivemnd --config <absolute-path> sync --all --apply` from Task Scheduler.",
       );
     }
     if (
@@ -312,6 +312,7 @@ WantedBy=timers.target
       "--config",
       request.configPath,
       "sync",
+      "--all",
       "--apply",
     ];
   }

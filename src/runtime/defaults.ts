@@ -10,6 +10,7 @@ import {
   SecureTokenStore,
 } from "../auth/token-store.js";
 import { ConfigRepository } from "../config.js";
+import { ReadlinePrompter } from "../prompts/readline-prompter.js";
 import {
   createScheduleManager,
   PeriodicSyncScheduler,
@@ -18,10 +19,13 @@ import { DailyUpdateChecker } from "../update/daily-update-checker.js";
 import type { RuntimeDependencies } from "./dependencies.js";
 
 const stateDirectory = process.env.HIVEMND_HOME ?? join(homedir(), ".hivemnd");
-const clientVersion = "0.2.2";
+const clientVersion = "0.3.0";
 
 export const defaultDependencies: RuntimeDependencies = {
   cwd: process.cwd(),
+  homeDirectory: homedir(),
+  runtimeExecutablePath: process.execPath,
+  cliScriptPath: resolveCliScriptPath(process.argv[1]),
   environment: process.env,
   output: {
     write: (message) => {
@@ -31,6 +35,8 @@ export const defaultDependencies: RuntimeDependencies = {
       console.error(message);
     },
   },
+  prompt: new ReadlinePrompter(process.stdin, process.stdout),
+  readHookInput: readStandardInput,
   configRepositoryFactory: (cwd) => new ConfigRepository(cwd),
   tokenStoreFactory: (config) =>
     new SecureTokenStore(
@@ -73,4 +79,11 @@ export function resolveUserId(getUserId: (() => number) | undefined): number {
 
 export function resolveCliScriptPath(value: string | undefined): string {
   return resolve(value ?? "hivemnd");
+}
+
+/* v8 ignore next 5 -- process-stdin composition is exercised by hosts, while injection parsing is integration-tested */
+async function readStandardInput(): Promise<string> {
+  const chunks: string[] = [];
+  for await (const chunk of process.stdin) chunks.push(String(chunk));
+  return chunks.join("");
 }

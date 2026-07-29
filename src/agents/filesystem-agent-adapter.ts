@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  chmod,
   lstat,
   mkdir,
   readFile,
@@ -9,7 +10,12 @@ import {
 } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { z } from "zod";
-import type { AgentAdapter, AgentKind, OwnershipEntry } from "../domain.js";
+import type {
+  AgentAdapter,
+  AgentKind,
+  ContextInstructionOwnership,
+  OwnershipEntry,
+} from "../domain.js";
 import { HivemndError } from "../errors.js";
 
 const ownershipLedgerSchema = z.object({
@@ -23,6 +29,13 @@ const ownershipLedgerSchema = z.object({
       releaseId: z.string().min(1),
     }),
   ),
+  contextInstruction: z
+    .object({
+      blockSha256: z.string().regex(/^[a-f\d]{64}$/),
+      prefix: z.enum(["", "\n", "\n\n"]),
+      createdFile: z.boolean(),
+    })
+    .optional(),
 });
 
 export class FilesystemAgentAdapter implements AgentAdapter {
@@ -32,6 +45,8 @@ export class FilesystemAgentAdapter implements AgentAdapter {
     readonly root: string,
     private readonly ownershipPath: string,
     private readonly ownershipRoot: string,
+    readonly instructionPath?: string,
+    private readonly instructionBoundary?: string,
   ) {}
 
   destination(relativePath: string): string {
@@ -79,13 +94,8 @@ export class FilesystemAgentAdapter implements AgentAdapter {
   }
 
   async readOwnership(): Promise<readonly OwnershipEntry[]> {
-    const destination = resolve(this.ownershipPath);
-    await this.assertNoSymlinks(destination, this.ownershipRoot);
-    const contents = await this.readOptional(destination);
-    if (contents === undefined) return [];
-    const ledger = ownershipLedgerSchema.parse(
-      JSON.parse(Buffer.from(contents).toString("utf8")) as unknown,
-    );
+    const ledger = await this.readOwnershipLedger();
+    if (!ledger) return [];
     const entries = Object.entries(ledger.artifacts).map(
       ([relativePath, ownership]): OwnershipEntry => ({
         relativePath,
@@ -101,7 +111,33 @@ export class FilesystemAgentAdapter implements AgentAdapter {
     );
   }
 
-  async replaceOwnership(entries: readonly OwnershipEntry[]): Promise<void> {
+  async readContextInstructionOwnership(): Promise<
+    ContextInstructionOwnership | undefined
+  > {
+    return (await this.readOwnershipLedger())?.contextInstruction;
+  }
+
+  async readInstruction(): Promise<Uint8Array | undefined> {
+    const { path, boundary } = this.requireInstructionTarget();
+    await this.assertNoSymlinks(path, boundary);
+    return this.readOptional(path);
+  }
+
+  async writeInstruction(content: Uint8Array): Promise<void> {
+    const { path, boundary } = this.requireInstructionTarget();
+    await this.writeAtomic(path, content, boundary);
+  }
+
+  async removeInstruction(): Promise<void> {
+    const { path, boundary } = this.requireInstructionTarget();
+    await this.assertNoSymlinks(path, boundary);
+    await rm(path, { force: true });
+  }
+
+  async replaceOwnership(
+    entries: readonly OwnershipEntry[],
+    contextInstruction?: ContextInstructionOwnership | null,
+  ): Promise<void> {
     const artifacts: Record<string, Omit<OwnershipEntry, "relativePath">> = {};
     for (const entry of [...entries].sort((left, right) =>
       left.relativePath.localeCompare(right.relativePath),
@@ -120,12 +156,45 @@ export class FilesystemAgentAdapter implements AgentAdapter {
         releaseId: entry.releaseId,
       };
     }
-    const ledger = ownershipLedgerSchema.parse({ version: 2, artifacts });
+    const current =
+      contextInstruction === undefined
+        ? (await this.readOwnershipLedger())?.contextInstruction
+        : (contextInstruction ?? undefined);
+    const ledger = ownershipLedgerSchema.parse({
+      version: 2,
+      artifacts,
+      ...(current ? { contextInstruction: current } : {}),
+    });
     await this.writeAtomic(
       resolve(this.ownershipPath),
       Buffer.from(`${JSON.stringify(ledger, null, 2)}\n`),
       this.ownershipRoot,
     );
+  }
+
+  private async readOwnershipLedger(): Promise<
+    z.infer<typeof ownershipLedgerSchema> | undefined
+  > {
+    const destination = resolve(this.ownershipPath);
+    await this.assertNoSymlinks(destination, this.ownershipRoot);
+    const contents = await this.readOptional(destination);
+    if (contents === undefined) return undefined;
+    return ownershipLedgerSchema.parse(
+      JSON.parse(Buffer.from(contents).toString("utf8")) as unknown,
+    );
+  }
+
+  private requireInstructionTarget(): { path: string; boundary: string } {
+    if (!this.instructionPath || !this.instructionBoundary) {
+      throw new HivemndError(
+        "CONFIG_INVALID",
+        `Destination ${this.name} does not support always-on instructions`,
+      );
+    }
+    return {
+      path: resolve(this.instructionPath),
+      boundary: resolve(this.instructionBoundary),
+    };
   }
 
   private resolveWithinRoot(relativePath: string): string {
@@ -157,13 +226,24 @@ export class FilesystemAgentAdapter implements AgentAdapter {
   ): Promise<void> {
     const temporary = `${destination}.hivemnd-${randomUUID()}.tmp`;
     await this.assertNoSymlinks(destination, boundaryRoot);
+    const mode = await this.existingMode(destination);
     await mkdir(dirname(destination), { recursive: true });
     await this.assertNoSymlinks(destination, boundaryRoot);
     try {
-      await writeFile(temporary, content, { mode: 0o600, flag: "wx" });
+      await writeFile(temporary, content, { mode, flag: "wx" });
+      await chmod(temporary, mode);
       await rename(temporary, destination);
     } catch (error: unknown) {
       await rm(temporary, { force: true });
+      throw error;
+    }
+  }
+
+  private async existingMode(path: string): Promise<number> {
+    try {
+      return (await lstat(path)).mode & 0o777;
+    } catch (error: unknown) {
+      if (isNodeError(error) && error.code === "ENOENT") return 0o600;
       throw error;
     }
   }

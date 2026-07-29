@@ -8,8 +8,9 @@ import {
   keychainAccount,
   runCommand,
 } from "../src/auth/token-store.js";
+import { parseActivationUrl } from "../src/auth/activation-url.js";
 import { ConfigRepository, loadConfig } from "../src/config.js";
-import { HivemndError, asHivemndError } from "../src/errors.js";
+import { HivemndError, asHivemndError, assertDefined } from "../src/errors.js";
 import {
   bytes,
   config,
@@ -60,6 +61,9 @@ describe("configuration repository", () => {
     await expect(loadConfig("missing.json", temp.path)).rejects.toMatchObject({
       code: "CONFIG_INVALID",
     });
+    await expect(
+      new ConfigRepository(temp.path).create("bad\0path", config(temp.path)),
+    ).rejects.toThrow();
     await expect(
       new ConfigRepository(temp.path).create("duplicate.json", {
         apiUrl: "https://hivemnd.test",
@@ -190,6 +194,46 @@ describe("secure credential storage", () => {
     await expect(
       runCommand("/definitely/missing/hivemnd-command", []),
     ).rejects.toThrow();
+    expect(new MacOsKeychain("tenant", "darwin", execute).available()).toBe(
+      true,
+    );
+    expect(new MacOsKeychain("tenant", "linux", execute).available()).toBe(
+      false,
+    );
+    expect(
+      new SecureTokenStore(
+        {},
+        new MacOsKeychain("tenant", "darwin", execute),
+      ).supportsPersistentStorage(),
+    ).toBe(true);
+    expect(
+      new SecureTokenStore(
+        {},
+        { get: async () => undefined, save: async () => undefined },
+      ).supportsPersistentStorage(),
+    ).toBe(false);
+  });
+});
+
+describe("activation URL", () => {
+  it("preserves tenant bases and supports root dedicated deployments", () => {
+    expect(
+      parseActivationUrl(
+        "https://shared.hivemnd.cloud/eigen/enroll?token=x#ignored",
+      ),
+    ).toEqual({ apiUrl: "https://shared.hivemnd.cloud/eigen", token: "x" });
+    expect(
+      parseActivationUrl("https://eigen.hivemnd.cloud/enroll?token=root"),
+    ).toEqual({ apiUrl: "https://eigen.hivemnd.cloud", token: "root" });
+  });
+
+  it.each([
+    "not a url",
+    "file:///enroll?token=x",
+    "https://hivemnd.test/enroll",
+    "https://hivemnd.test/login?token=x",
+  ])("rejects unsafe or incomplete activation URL %s", (value) => {
+    expect(() => parseActivationUrl(value)).toThrow();
   });
 });
 
@@ -223,7 +267,17 @@ describe("HTTP API adapter", () => {
       request.on("end", () => {
         requests.push({ path: request.url, method: request.method, body });
         response.statusCode = 200;
-        if (request.url?.includes("enrollments")) {
+        if (
+          request.url === "/api/v1/enrollments/preview" ||
+          request.url === "/api/v1/client-configuration"
+        ) {
+          response.end(
+            JSON.stringify({
+              organization: { name: "Eigen", slug: "eigen" },
+              enabled_clients: ["codex", "claude"],
+            }),
+          );
+        } else if (request.url === "/api/v1/enrollments/exchange") {
           response.end(
             JSON.stringify({
               access_token: "access",
@@ -246,6 +300,14 @@ describe("HTTP API adapter", () => {
     );
 
     await expect(client.manifest("bearer")).resolves.toEqual(manifest(content));
+    await expect(client.previewEnrollment("one-time")).resolves.toEqual({
+      organization: { name: "Eigen", slug: "eigen" },
+      enabledClients: ["codex", "claude"],
+    });
+    await expect(client.clientConfiguration("bearer")).resolves.toEqual({
+      organization: { name: "Eigen", slug: "eigen" },
+      enabledClients: ["codex", "claude"],
+    });
     await expect(
       client
         .download("bearer", manifest(content).artifacts[0]!)
@@ -278,17 +340,22 @@ describe("HTTP API adapter", () => {
     ).resolves.toBeUndefined();
     expect(requests.map(({ path, method }) => ({ path, method }))).toEqual([
       { path: "/api/v1/sync/manifest", method: "GET" },
+      { path: "/api/v1/enrollments/preview", method: "POST" },
+      { path: "/api/v1/client-configuration", method: "GET" },
       { path: "/api/v1/artifact-versions/version-1/content", method: "GET" },
       { path: "/api/v1/enrollments/exchange", method: "POST" },
       { path: "/api/v1/sync/receipts", method: "POST" },
     ]);
-    expect(JSON.parse(requests[2]!.body)).toEqual({
+    expect(JSON.parse(requests[1]!.body)).toEqual({
+      enrollment_token: "one-time",
+    });
+    expect(JSON.parse(requests[4]!.body)).toEqual({
       enrollment_token: "one-time",
       client_kind: "hivemnd_cli",
       platform: "darwin-arm64",
       client_version: "0.1.0",
     });
-    expect(requests[3]!.body).toContain('"idempotency_key":"receipt-1"');
+    expect(requests[5]!.body).toContain('"idempotency_key":"receipt-1"');
 
     const currentManifest = wireManifest(content);
     currentManifest.expires_at = "2099-01-01T00:00:00.000Z";
@@ -304,12 +371,20 @@ describe("HTTP API adapter", () => {
 
   it("returns stable typed failures for HTTP, schema, expiry, enrollment, and cross-origin paths", async () => {
     const failure = await serve((_request, response) => {
-      response.statusCode = 401;
+      response.statusCode = 500;
       response.end();
     });
     await expect(
       new HttpApiClient(failure.url).manifest("secret"),
     ).rejects.toMatchObject({ code: "HTTP_FAILED" });
+
+    const unauthorized = await serve((_request, response) => {
+      response.statusCode = 401;
+      response.end();
+    });
+    await expect(
+      new HttpApiClient(unauthorized.url).clientConfiguration("expired"),
+    ).rejects.toMatchObject({ code: "AUTH_MISSING" });
 
     const malformed = await serve((_request, response) =>
       response.end(JSON.stringify({ schema_version: 9 })),
@@ -350,6 +425,13 @@ describe("HTTP API adapter", () => {
     ).rejects.toMatchObject({
       code: "ENROLLMENT_INVALID",
     });
+
+    await expect(
+      new HttpApiClient(badEnrollment.url).previewEnrollment("x"),
+    ).rejects.toMatchObject({ code: "CLIENT_CONFIGURATION_INVALID" });
+    await expect(
+      new HttpApiClient(badEnrollment.url).clientConfiguration("x"),
+    ).rejects.toMatchObject({ code: "CLIENT_CONFIGURATION_INVALID" });
 
     const client = new HttpApiClient("https://hivemnd.test");
     await expect(
@@ -400,6 +482,15 @@ describe("HTTP API adapter", () => {
 });
 
 describe("typed errors", () => {
+  it("enforces internal defined-value invariants", () => {
+    const value: string | undefined = "present";
+    assertDefined(value, "missing");
+    expect(value).toBe("present");
+    expect(() => assertDefined(undefined, "missing")).toThrow(
+      expect.objectContaining({ code: "CONFIG_INVALID", message: "missing" }),
+    );
+  });
+
   it("preserves domain failures and normalizes Error and unknown values", () => {
     const typed = new HivemndError("AUTH_MISSING", "missing");
     expect(asHivemndError(typed)).toBe(typed);

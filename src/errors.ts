@@ -6,12 +6,20 @@ export type ErrorCode =
   | "ENROLLMENT_INVALID"
   | "HTTP_FAILED"
   | "INTEGRITY_FAILED"
+  | "INTERACTIVE_REQUIRED"
   | "KEYCHAIN_UNAVAILABLE"
   | "MANIFEST_EXPIRED"
   | "MANIFEST_INVALID"
+  | "MCP_PROTOCOL_INVALID"
+  | "MCP_REGISTRATION_CONFLICT"
+  | "MCP_REGISTRATION_INVALID"
+  | "MCP_REGISTRATION_UNSAFE"
+  | "MCP_REMOTE_FAILED"
+  | "MCP_REMOTE_INVALID"
   | "PATH_UNSAFE"
   | "SOURCES_INVALID"
   | "SOURCE_SCHEMA_INVALID"
+  | "CLIENT_CONFIGURATION_INVALID"
   | "SCHEDULE_UNSUPPORTED"
   | "SYNC_CONFLICT"
   | "SYNC_FAILED";
@@ -24,6 +32,15 @@ export class HivemndError extends Error {
   ) {
     super(message, options);
     this.name = "HivemndError";
+  }
+}
+
+export function assertDefined<T>(
+  value: T | undefined,
+  message: string,
+): asserts value is T {
+  if (value === undefined) {
+    throw new HivemndError("CONFIG_INVALID", message);
   }
 }
 

@@ -40,8 +40,39 @@ export function createFilesystemAdapters(
         "ownership.json",
       ),
       stateDirectory,
+      instructionPath(destination, homeDirectory),
+      instructionBoundary(destination, homeDirectory),
     );
   });
+}
+
+function instructionPath(
+  destination: DestinationConfig,
+  homeDirectory: string,
+): string | undefined {
+  if (destination.scope === "directory") return undefined;
+  if (destination.scope === "root") {
+    return destination.agent === "codex"
+      ? join(resolve(homeDirectory), ".codex", "AGENTS.md")
+      : join(resolve(homeDirectory), ".claude", "CLAUDE.md");
+  }
+  return join(
+    resolve(requirePath(destination)),
+    destination.agent === "codex" ? "AGENTS.md" : "CLAUDE.md",
+  );
+}
+
+function instructionBoundary(
+  destination: DestinationConfig,
+  homeDirectory: string,
+): string | undefined {
+  if (destination.scope === "directory") return undefined;
+  if (destination.scope === "root") {
+    return destination.agent === "codex"
+      ? join(resolve(homeDirectory), ".codex")
+      : join(resolve(homeDirectory), ".claude");
+  }
+  return resolve(requirePath(destination));
 }
 
 export function resolveAgentRoot(

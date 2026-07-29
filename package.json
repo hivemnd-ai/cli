@@ -1,6 +1,6 @@
 {
   "name": "@hivemnd-ai/cli",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Securely synchronize Hivemnd artifacts with local AI coding agents.",
   "repository": {
     "type": "git",
@@ -34,6 +34,7 @@
   },
   "dependencies": {
     "commander": "^15.0.0",
+    "jsonc-parser": "^3.3.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {

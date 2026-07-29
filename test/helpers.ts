@@ -100,6 +100,14 @@ export function api(content = "# Team skill\n"): ApiClient & {
   const receipts: unknown[] = [];
   return {
     receipts,
+    previewEnrollment: async () => ({
+      organization: { name: "Eigen", slug: "eigen" },
+      enabledClients: ["codex", "claude"],
+    }),
+    clientConfiguration: async () => ({
+      organization: { name: "Eigen", slug: "eigen" },
+      enabledClients: ["codex", "claude"],
+    }),
     manifest: async () => manifest(content),
     exchangeEnrollment: async () => ({
       accessToken: "enrolled-token",

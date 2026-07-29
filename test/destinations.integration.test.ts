@@ -51,24 +51,37 @@ describe("named installation destinations", () => {
     const adapters = createFilesystemAdapters(config, [], home, state);
 
     expect(
-      adapters.map(({ name, kind, root }) => ({ name, kind, root })),
+      adapters.map(({ name, kind, root, instructionPath }) => ({
+        name,
+        kind,
+        root,
+        instructionPath,
+      })),
     ).toEqual([
       {
         name: "codex-global",
         kind: "codex",
         root: join(home, ".agents"),
+        instructionPath: join(home, ".codex/AGENTS.md"),
       },
       {
         name: "codex-repo",
         kind: "codex",
         root: join(workspace, ".agents"),
+        instructionPath: join(workspace, "AGENTS.md"),
       },
       {
         name: "claude-repo",
         kind: "claude",
         root: join(workspace, ".claude"),
+        instructionPath: join(workspace, "CLAUDE.md"),
       },
-      { name: "claude-custom", kind: "claude", root: explicit },
+      {
+        name: "claude-custom",
+        kind: "claude",
+        root: explicit,
+        instructionPath: undefined,
+      },
     ]);
   });
 
