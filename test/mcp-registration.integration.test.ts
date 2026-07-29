@@ -172,6 +172,72 @@ describe("MCP host registration", () => {
     }
   });
 
+  it("upgrades only an exactly marked Claude launcher across npm runtime, script, and state paths", async () => {
+    const temporary = await temporaryDirectory();
+    try {
+      const path = join(temporary.path, ".claude.json");
+      await writeFile(
+        path,
+        JSON.stringify({
+          theme: "dark",
+          mcpServers: {
+            hivemnd: {
+              command: "/old/npm/node",
+              args: [
+                "/old/npm/hivemnd/dist/index.js",
+                "mcp",
+                "serve",
+                "--client",
+                "claude",
+              ],
+              env: {
+                HIVEMND_MANAGED_MCP: "1",
+                HIVEMND_HOME: "/old/state",
+              },
+            },
+          },
+        }),
+      );
+      const registration = new ClaudeMcpRegistration(path);
+      const next = mcpServerDefinition({
+        client: "claude",
+        runtimeExecutablePath: "/new/npm/node",
+        cliScriptPath: "/new/npm/hivemnd/dist/index.js",
+        stateDirectory: "/new/state",
+      });
+
+      await expect(registration.install(next)).resolves.toEqual({
+        changed: true,
+        state: "installed",
+      });
+      const upgraded = JSON.parse(await readFile(path, "utf8")) as {
+        theme: string;
+        mcpServers: Record<string, unknown>;
+      };
+      expect(upgraded.theme).toBe("dark");
+      expect(upgraded.mcpServers.hivemnd).toEqual({
+        command: "/new/npm/node",
+        args: [
+          "/new/npm/hivemnd/dist/index.js",
+          "mcp",
+          "serve",
+          "--client",
+          "claude",
+        ],
+        env: {
+          HIVEMND_MANAGED_MCP: "1",
+          HIVEMND_HOME: "/new/state",
+        },
+      });
+      await expect(registration.install(next)).resolves.toEqual({
+        changed: false,
+        state: "installed",
+      });
+    } finally {
+      await temporary.cleanup();
+    }
+  });
+
   it("rolls back earlier registrations when a later registration fails", async () => {
     const temporary = await temporaryDirectory();
     try {
@@ -413,7 +479,11 @@ describe("MCP host registration", () => {
     try {
       const codexPath = join(temporary.path, "codex.toml");
       const claudePath = join(temporary.path, "claude.json");
-      const definition = { command: "hivemnd", args: ["mcp", "serve"] };
+      const definition = mcpServerDefinition({
+        client: "claude",
+        runtimeExecutablePath: "/opt/node/bin/node",
+        cliScriptPath: "/opt/hivemnd/dist/index.js",
+      });
       const codex = new CodexMcpRegistration(codexPath);
       const claude = new ClaudeMcpRegistration(claudePath);
       expect(await codex.remove()).toEqual({
@@ -505,6 +575,83 @@ describe("MCP host registration", () => {
             command: "hivemnd",
             args: "mcp",
             env: { HIVEMND_MANAGED_MCP: "1" },
+          },
+          state: "conflict",
+        },
+        {
+          value: {
+            command: "/old/node",
+            args: [1],
+            env: { HIVEMND_MANAGED_MCP: "1" },
+          },
+          state: "conflict",
+        },
+        {
+          value: {
+            command: "/old/node",
+            args: ["/old/cli.js", "mcp", "serve", "--client", "claude"],
+            env: null,
+          },
+          state: "conflict",
+        },
+        {
+          value: {
+            command: "/old/node",
+            args: ["/old/cli.js", "mcp", "serve", "--client", "claude"],
+            env: {},
+          },
+          state: "conflict",
+        },
+        {
+          value: {
+            command: "/old/node",
+            args: ["/old/cli.js", "mcp", "serve", "--client", "claude"],
+            env: {
+              HIVEMND_MANAGED_MCP: "1",
+              UNRELATED: "value",
+            },
+          },
+          state: "conflict",
+        },
+        {
+          value: {
+            command: "/old/node",
+            args: ["/old/cli.js", "mcp", "serve"],
+            env: { HIVEMND_MANAGED_MCP: "1" },
+          },
+          state: "conflict",
+        },
+        {
+          value: {
+            command: "/old/node",
+            args: ["relative-cli.js", "mcp", "serve", "--client", "claude"],
+            env: { HIVEMND_MANAGED_MCP: "1" },
+          },
+          state: "conflict",
+        },
+        {
+          value: {
+            command: "/old/node",
+            args: [
+              "/old/cli.js",
+              "mcp",
+              "serve",
+              "--client",
+              "claude",
+              "--extra",
+            ],
+            env: { HIVEMND_MANAGED_MCP: "1" },
+          },
+          state: "conflict",
+        },
+        {
+          value: {
+            command: "/old/node",
+            args: ["/old/cli.js", "mcp", "serve", "--client", "claude"],
+            env: {
+              HIVEMND_MANAGED_MCP: "1",
+              HIVEMND_HOME: "relative-state",
+            },
           },
           state: "conflict",
         },
