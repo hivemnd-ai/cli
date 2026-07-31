@@ -244,12 +244,15 @@ Unrelated hooks and user configuration are preserved. During migration an old
 managed block is removed from `AGENTS.md` or `CLAUDE.md` only when its ownership
 record and exact hash still match; unowned marker text is untouched.
 
-## PostgreSQL sources
+## Company sources
 
 `hivemnd sources list` calls `GET /api/v1/sources` and displays only the sources
-and effective actions authorized by the backend. `hivemnd sources inspect
-SOURCE_UUID` calls `GET /api/v1/sources/:id/schema` and prints the ordered
-PostgreSQL schemas, tables and columns returned by the server.
+and effective actions authorized by the backend, including PostgreSQL databases
+and GitHub repositories. `hivemnd sources inspect SOURCE_UUID` remains specific
+to PostgreSQL: it calls `GET /api/v1/sources/:id/schema` and prints the ordered
+schemas, tables and columns returned by the server. GitHub repository reads use
+the governed MCP `list_tree` and `read_file` actions instead of a CLI content
+command.
 
 The CLI validates both responses strictly. It does not connect to customer
 databases or apply client-side authorization. Query execution remains an MCP and
