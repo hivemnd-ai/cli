@@ -147,7 +147,10 @@ export interface EnrollmentClient {
   readonly clientVersion: string;
 }
 
-export const sourceAdapterKinds = ["postgresql_database"] as const;
+export const sourceAdapterKinds = [
+  "postgresql_database",
+  "github_repository",
+] as const;
 export type SourceAdapterKind = (typeof sourceAdapterKinds)[number];
 
 export const sourceStatuses = [
@@ -161,6 +164,8 @@ export type SourceStatus = (typeof sourceStatuses)[number];
 export const sourceActionKeys = [
   "inspect_schema",
   "execute_approved_read_query",
+  "list_tree",
+  "read_file",
 ] as const;
 export type SourceActionKey = (typeof sourceActionKeys)[number];
 

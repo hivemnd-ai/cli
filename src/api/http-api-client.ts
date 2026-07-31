@@ -84,6 +84,10 @@ const sourceIdentitySchema = z
   })
   .strict();
 
+const postgresqlSourceIdentitySchema = sourceIdentitySchema.extend({
+  adapter_kind: z.literal("postgresql_database"),
+});
+
 const sourcesSchema = z
   .object({
     sources: z.array(
@@ -106,7 +110,7 @@ const sourcesSchema = z
 
 const sourceSchemaSchema = z
   .object({
-    source: sourceIdentitySchema,
+    source: postgresqlSourceIdentitySchema,
     schemas: z.array(
       z
         .object({

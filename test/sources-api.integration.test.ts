@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { HttpApiClient } from "../src/api/http-api-client.js";
 
 const sourceId = "00000000-0000-4000-8000-000000000001";
+const repositorySourceId = "00000000-0000-4000-8000-000000000002";
 const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
@@ -81,6 +82,16 @@ describe("PostgreSQL source API adapter", () => {
                 },
               ],
             },
+            {
+              id: repositorySourceId,
+              name: "hivemnd-ai/cli",
+              adapter_kind: "github_repository",
+              status: "active",
+              actions: [
+                { key: "list_tree", status: "available" },
+                { key: "read_file", status: "unavailable" },
+              ],
+            },
           ],
         }),
       );
@@ -96,6 +107,16 @@ describe("PostgreSQL source API adapter", () => {
         actions: [
           { key: "inspect_schema", status: "available" },
           { key: "execute_approved_read_query", status: "disabled" },
+        ],
+      },
+      {
+        id: repositorySourceId,
+        name: "hivemnd-ai/cli",
+        adapterKind: "github_repository",
+        status: "active",
+        actions: [
+          { key: "list_tree", status: "available" },
+          { key: "read_file", status: "unavailable" },
         ],
       },
     ]);
@@ -170,6 +191,30 @@ describe("PostgreSQL source API adapter", () => {
     await expect(
       new HttpApiClient(invalidList.url).listSources("token"),
     ).rejects.toMatchObject({ code: "SOURCES_INVALID" });
+
+    for (const invalidSource of [
+      {
+        id: sourceId,
+        name: "Unknown provider",
+        adapter_kind: "unknown_provider",
+        status: "active",
+        actions: [],
+      },
+      {
+        id: repositorySourceId,
+        name: "hivemnd-ai/cli",
+        adapter_kind: "github_repository",
+        status: "active",
+        actions: [{ key: "delete_repository", status: "available" }],
+      },
+    ]) {
+      const invalidCatalogValue = await serve((_request, response) =>
+        response.end(JSON.stringify({ sources: [invalidSource] })),
+      );
+      await expect(
+        new HttpApiClient(invalidCatalogValue.url).listSources("token"),
+      ).rejects.toMatchObject({ code: "SOURCES_INVALID" });
+    }
 
     const invalidSchema = await serve((_request, response) =>
       response.end(

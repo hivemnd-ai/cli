@@ -1234,6 +1234,7 @@ describe("sync command", () => {
 
 describe("source discovery commands", () => {
   const sourceId = "00000000-0000-4000-8000-000000000001";
+  const repositorySourceId = "00000000-0000-4000-8000-000000000002";
 
   it("lists authorized sources and their effective actions", async () => {
     const listSources = vi.fn(async () => [
@@ -1250,6 +1251,16 @@ describe("source discovery commands", () => {
           },
         ],
       },
+      {
+        id: repositorySourceId,
+        name: "hivemnd-ai/cli",
+        adapterKind: "github_repository" as const,
+        status: "active" as const,
+        actions: [
+          { key: "list_tree" as const, status: "available" as const },
+          { key: "read_file" as const, status: "available" as const },
+        ],
+      },
     ]);
     const { deps } = await setup({ selectedApi: { ...api(), listSources } });
 
@@ -1258,6 +1269,7 @@ describe("source discovery commands", () => {
     expect(listSources).toHaveBeenCalledWith("token");
     expect(deps.output.messages).toEqual([
       `${sourceId} | Engineering database | postgresql_database | active | inspect_schema:available, execute_approved_read_query:disabled`,
+      `${repositorySourceId} | hivemnd-ai/cli | github_repository | active | list_tree:available, read_file:available`,
     ]);
   });
 
