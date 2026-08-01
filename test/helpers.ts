@@ -20,6 +20,7 @@ export function manifest(content = "# Team skill\n"): SyncManifest {
   return {
     schemaVersion: 1,
     minimumClientVersion: "0.1.0",
+    alwaysContextByteLimit: 10_000,
     release: { id: "release-1", sequence: 1 },
     generatedAt: new Date("2026-07-25T10:00:00.000Z"),
     expiresAt: new Date("2026-07-26T10:00:00.000Z"),
@@ -34,7 +35,11 @@ export function manifest(content = "# Team skill\n"): SyncManifest {
         size: body.byteLength,
         sha256: hash(body),
         contentPath: "/api/v1/artifact-versions/version-1/content",
-        targets: ["codex", "claude"],
+        targets: ["claude", "codex"],
+        deliveryTargets: [
+          { clientKind: "claude", installScope: "any" },
+          { clientKind: "codex", installScope: "any" },
+        ],
       },
     ],
   };

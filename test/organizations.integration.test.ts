@@ -434,6 +434,7 @@ describe("multi-organization CLI onboarding", () => {
       id: () => "receipt",
       clientPlatform: "test",
       clientVersion: "1.0.0",
+      clientFeatures: ["exact-delivery-targets-v1"],
       updateService: {
         check: async () => ({
           checked: false,
@@ -2050,6 +2051,7 @@ function organizationApi(apiUrl: string): ApiClient {
     manifest: async () => ({
       schemaVersion: 1,
       minimumClientVersion: "0.1.0",
+      alwaysContextByteLimit: 10_000,
       release: { id: `${slug}-release`, sequence: 1 },
       generatedAt: new Date("2026-01-01T00:00:00.000Z"),
       expiresAt: new Date("2099-01-01T00:00:00.000Z"),
@@ -2091,6 +2093,7 @@ function minimalRuntime(
     id: () => "id",
     clientPlatform: "test",
     clientVersion: "1.0.0",
+    clientFeatures: ["exact-delivery-targets-v1"],
     updateService: {
       check: async () => ({
         checked: false,

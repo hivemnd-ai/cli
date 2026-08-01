@@ -5,10 +5,12 @@ import { FilesystemAgentAdapter } from "../src/agents/filesystem-agent-adapter.j
 import type {
   AgentAdapter,
   AgentKind,
+  DestinationScope,
   OwnershipEntry,
   SyncChange,
 } from "../src/domain.js";
 import { SyncApplier } from "../src/sync/applier.js";
+import { assertCompatibleDeliveryTargets } from "../src/sync/delivery-targets.js";
 import { sha256 } from "../src/sync/hash.js";
 import { SyncPlanner } from "../src/sync/planner.js";
 import { SyncPreparer } from "../src/sync/preparer.js";
@@ -349,6 +351,85 @@ describe("ownership-aware planning", () => {
       ),
     ).rejects.toThrow("Duplicate artifact assignment");
   });
+
+  it("plans exact user targets for root and direct agent roots but not workspaces", async () => {
+    function scopedAdapter(
+      name: string,
+      scope: DestinationScope,
+    ): AgentAdapter {
+      return {
+        name,
+        kind: "codex",
+        scope,
+        root: `/${name}`,
+        destination: (path) => `/${name}/${path}`,
+        read: async () => undefined,
+        write: async () => undefined,
+        remove: async () => undefined,
+        readOwnership: async () => [],
+        replaceOwnership: async () => undefined,
+      };
+    }
+    const base = prepared();
+    const scoped = {
+      ...base,
+      artifacts: base.artifacts.map((artifact) => ({
+        ...artifact,
+        deliveryTargets: [
+          {
+            clientKind: "codex",
+            installScope: "user",
+          },
+        ],
+      })),
+    } as typeof base;
+
+    const changes = await new SyncPlanner().plan(scoped, [
+      scopedAdapter("global", "root"),
+      scopedAdapter("workspace", "workspace"),
+      scopedAdapter("direct", "directory"),
+    ]);
+
+    expect(
+      changes
+        .filter(({ kind }) => kind === "create")
+        .map(({ destinationName }) => destinationName),
+    ).toEqual(["global", "direct"]);
+  });
+
+  it("plans one compatible assignment when several exact targets match", async () => {
+    const adapter = await setup();
+    Object.assign(adapter, { scope: "workspace" });
+    const base = prepared();
+    const scoped = {
+      ...base,
+      artifacts: base.artifacts.map((artifact) => ({
+        ...artifact,
+        deliveryTargets: [
+          {
+            clientKind: "codex",
+            installScope: "workspace",
+            minimumClientVersion: "2.0.0",
+          },
+          {
+            clientKind: "codex",
+            installScope: "workspace",
+            minimumClientVersion: "1.0.0",
+          },
+        ],
+      })),
+    } as typeof base;
+
+    await expect(
+      new SyncPlanner().plan(scoped, [adapter], {
+        adoptExisting: false,
+        clientVersion: "1.5.0",
+      }),
+    ).resolves.toHaveLength(1);
+    expect(() =>
+      assertCompatibleDeliveryTargets(scoped.artifacts, [adapter], "next"),
+    ).toThrow("Hivemnd CLI next or newer is required");
+  });
 });
 
 describe("transactional apply", () => {
@@ -362,6 +443,7 @@ describe("transactional apply", () => {
     const adapter = {
       name: `${kind}-destination`,
       kind,
+      scope: "directory" as const,
       root: `/${kind}`,
       files: new Map<string, Uint8Array>(),
       ledger: [] as OwnershipEntry[],

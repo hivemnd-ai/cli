@@ -27,7 +27,10 @@ export interface McpCommandRuntime {
 type McpCliDependencies = Pick<
   RuntimeDependencies,
   "cwd" | "output" | "tokenStoreFactory"
-> & { readonly environment?: NodeJS.ProcessEnv };
+> &
+  Partial<Pick<RuntimeDependencies, "clientVersion" | "clientFeatures">> & {
+    readonly environment?: NodeJS.ProcessEnv;
+  };
 
 export function registerMcpCommands(
   program: Command,
@@ -52,6 +55,12 @@ export function registerMcpCommands(
         input: runtime.input ?? process.stdin,
         protocolOutput: runtime.protocolOutput ?? process.stdout,
         diagnostics: runtime.diagnostics ?? process.stderr,
+        ...(dependencies.clientVersion
+          ? { clientVersion: dependencies.clientVersion }
+          : {}),
+        ...(dependencies.clientFeatures
+          ? { clientFeatures: dependencies.clientFeatures }
+          : {}),
         ...(runtime.fetcher ? { fetcher: runtime.fetcher } : {}),
       });
     });
@@ -90,6 +99,12 @@ export function registerMcpCommands(
         resolver: runtime.resolver,
         tokenStoreFactory: dependencies.tokenStoreFactory,
         output: dependencies.output,
+        ...(dependencies.clientVersion
+          ? { clientVersion: dependencies.clientVersion }
+          : {}),
+        ...(dependencies.clientFeatures
+          ? { clientFeatures: dependencies.clientFeatures }
+          : {}),
         registrationState: () =>
           target.registration.status(target.scope, definition),
         ...(runtime.fetcher ? { fetcher: runtime.fetcher } : {}),

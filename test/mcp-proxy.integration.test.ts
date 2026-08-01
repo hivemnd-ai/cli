@@ -145,14 +145,18 @@ describe("MCP stdio proxy", () => {
       .setEncoding("utf8")
       .on("data", (chunk: string) => (stderr += chunk));
 
-    const running = runStdioProxy(
-      new McpHttpProxy({
-        apiUrl: "https://shared.hivemnd.cloud/eigen",
-        token: "secret-token",
-        fetcher,
-      }),
-      { input, output, diagnostics },
-    );
+    const runtimeAwareOptions = {
+      apiUrl: "https://shared.hivemnd.cloud/eigen",
+      token: "secret-token",
+      fetcher,
+      clientVersion: "0.4.0",
+      clientFeatures: ["exact-delivery-targets-v1"],
+    };
+    const running = runStdioProxy(new McpHttpProxy(runtimeAwareOptions), {
+      input,
+      output,
+      diagnostics,
+    });
     input.end('{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n');
     await running;
 
@@ -168,8 +172,34 @@ describe("MCP stdio proxy", () => {
       accept: "application/json",
       authorization: "Bearer secret-token",
       "content-type": "application/json",
+      "Hivemnd-Client-Features": "exact-delivery-targets-v1",
+      "Hivemnd-Client-Version": "0.4.0",
     });
     expect(requests[0]?.init?.body).not.toContain("secret-token");
+    expect(requests[0]?.init?.body).toBe(
+      '{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+    );
+    expect(JSON.stringify(requests[0]?.init?.headers)).not.toMatch(
+      /workspace|artifact[-_ ]content|prompt|authority claim/i,
+    );
+
+    expect(
+      new McpHttpProxy({
+        apiUrl: "https://shared.hivemnd.cloud/eigen",
+        token: "secret-token",
+        clientVersion: "0.4.0",
+        fetcher,
+      }),
+    ).toBeDefined();
+    expect(
+      () =>
+        new McpHttpProxy({
+          apiUrl: "https://shared.hivemnd.cloud/eigen",
+          token: "secret-token",
+          clientFeatures: ["exact-delivery-targets-v1"],
+          fetcher,
+        }),
+    ).toThrow("bounded strict SemVer");
   });
 
   it("does not emit a response for notifications accepted without a body", async () => {

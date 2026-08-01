@@ -2,6 +2,10 @@ import { StringDecoder } from "node:string_decoder";
 import type { Readable, Writable } from "node:stream";
 import { HivemndError } from "../errors.js";
 import { resolveTenantUrl, tenantBaseUrl } from "../tenant-url.js";
+import {
+  clientRuntimeHeaders,
+  type ClientRuntimeMetadata,
+} from "../client/runtime-contract.js";
 
 type JsonRpcId = string | number | null;
 type JsonRpcMessage = Record<string, unknown>;
@@ -12,6 +16,8 @@ export interface McpHttpProxyOptions {
   readonly fetcher?: typeof fetch;
   readonly timeoutMs?: number;
   readonly maxResponseBytes?: number;
+  readonly clientVersion?: string;
+  readonly clientFeatures?: readonly string[];
 }
 
 export interface StdioProxyStreams {
@@ -30,6 +36,7 @@ export class McpHttpProxy {
   private readonly token: string;
   private readonly timeoutMs: number;
   private readonly maxResponseBytes: number;
+  private readonly runtimeMetadata?: ClientRuntimeMetadata;
 
   constructor(options: McpHttpProxyOptions) {
     if (!options.token.trim()) {
@@ -43,6 +50,13 @@ export class McpHttpProxy {
     this.fetcher = options.fetcher ?? fetch;
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.maxResponseBytes = options.maxResponseBytes ?? 1_048_576;
+    if (options.clientVersion || options.clientFeatures) {
+      this.runtimeMetadata = {
+        clientVersion: options.clientVersion ?? "",
+        clientFeatures: options.clientFeatures ?? [],
+      };
+      clientRuntimeHeaders(this.runtimeMetadata);
+    }
   }
 
   async forward(message: unknown): Promise<JsonRpcMessage | undefined> {
@@ -70,6 +84,7 @@ export class McpHttpProxy {
           accept: "application/json",
           authorization: `Bearer ${this.token}`,
           "content-type": "application/json",
+          ...clientRuntimeHeaders(this.runtimeMetadata),
         },
         body: JSON.stringify(message),
         signal: controller.signal,

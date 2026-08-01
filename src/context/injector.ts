@@ -89,7 +89,7 @@ export async function injectAlwaysContext(
   return new AlwaysContextCache({
     stateDirectory: options.stateDirectory,
     apiUrl: profile.apiUrl,
-  }).read(options.client);
+  }).read(options.client, options.scope === "global" ? "user" : "workspace");
 }
 
 function selectProfile(

@@ -11,15 +11,24 @@ import {
 } from "../auth/token-store.js";
 import { ConfigRepository } from "../config.js";
 import { ReadlinePrompter } from "../prompts/readline-prompter.js";
+import type { HivemndConfig } from "../domain.js";
 import {
   createScheduleManager,
   PeriodicSyncScheduler,
 } from "../schedule/periodic-sync-scheduler.js";
 import { DailyUpdateChecker } from "../update/daily-update-checker.js";
 import type { RuntimeDependencies } from "./dependencies.js";
+import { clientTechnicalFeatures } from "../client/runtime-contract.js";
 
 const stateDirectory = process.env.HIVEMND_HOME ?? join(homedir(), ".hivemnd");
 const clientVersion = "0.3.2";
+
+export function createDefaultApiClient(config: HivemndConfig): HttpApiClient {
+  return new HttpApiClient(config.apiUrl, fetch, undefined, {
+    clientVersion,
+    clientFeatures: clientTechnicalFeatures,
+  });
+}
 
 export const defaultDependencies: RuntimeDependencies = {
   cwd: process.cwd(),
@@ -43,7 +52,7 @@ export const defaultDependencies: RuntimeDependencies = {
       process.env,
       new MacOsKeychain(keychainAccount(config.apiUrl)),
     ),
-  apiClientFactory: (config) => new HttpApiClient(config.apiUrl),
+  apiClientFactory: createDefaultApiClient,
   adapterFactory: (config, destinationNames) =>
     createFilesystemAdapters(
       config,
@@ -55,6 +64,7 @@ export const defaultDependencies: RuntimeDependencies = {
   id: randomUUID,
   clientPlatform: `${process.platform}-${process.arch}`,
   clientVersion,
+  clientFeatures: clientTechnicalFeatures,
   updateService: new DailyUpdateChecker({
     currentVersion: clientVersion,
     stateDirectory,

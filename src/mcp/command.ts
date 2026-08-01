@@ -40,6 +40,8 @@ export interface McpCommandDependencies {
   readonly protocolOutput: Writable;
   readonly diagnostics: Writable;
   readonly fetcher?: typeof fetch;
+  readonly clientVersion?: string;
+  readonly clientFeatures?: readonly string[];
 }
 
 export interface McpStatusDependencies extends Omit<
@@ -70,6 +72,12 @@ export async function serveMcp(
     new McpHttpProxy({
       apiUrl: organization.config.apiUrl,
       token: token.value,
+      ...(dependencies.clientVersion
+        ? { clientVersion: dependencies.clientVersion }
+        : {}),
+      ...(dependencies.clientFeatures
+        ? { clientFeatures: dependencies.clientFeatures }
+        : {}),
       ...(dependencies.fetcher ? { fetcher: dependencies.fetcher } : {}),
     }),
     {
@@ -102,6 +110,12 @@ export async function mcpStatus(
   const proxy = new McpHttpProxy({
     apiUrl: organization.config.apiUrl,
     token: token.value,
+    ...(dependencies.clientVersion
+      ? { clientVersion: dependencies.clientVersion }
+      : {}),
+    ...(dependencies.clientFeatures
+      ? { clientFeatures: dependencies.clientFeatures }
+      : {}),
     ...(dependencies.fetcher ? { fetcher: dependencies.fetcher } : {}),
   });
   await proxy.forward({
@@ -111,7 +125,10 @@ export async function mcpStatus(
     params: {
       protocolVersion: "2025-03-26",
       capabilities: {},
-      clientInfo: { name: "hivemnd-cli", version: "status" },
+      clientInfo: {
+        name: "hivemnd-cli",
+        version: dependencies.clientVersion ?? "status",
+      },
     },
   });
   dependencies.output.write(

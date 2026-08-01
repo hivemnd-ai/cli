@@ -205,7 +205,11 @@ export class SyncApplier {
               : ("applied" as const),
         })),
         ...(cacheApplication?.change.manifest?.entries.flatMap((entry) =>
-          entry.targets.map((target) => ({
+          [
+            ...new Set(
+              entry.deliveryTargets.map((target) => target.clientKind),
+            ),
+          ].map((target) => ({
             artifactVersionId: entry.artifactVersionId,
             target,
             action: "unchanged" as const,

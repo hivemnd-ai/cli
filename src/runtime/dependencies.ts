@@ -45,6 +45,7 @@ export interface RuntimeDependencies {
   readonly id: () => string;
   readonly clientPlatform: string;
   readonly clientVersion: string;
+  readonly clientFeatures: readonly string[];
   readonly updateService: UpdateService;
   readonly scheduleManagerFactory: (options: {
     readonly apiUrl: string;

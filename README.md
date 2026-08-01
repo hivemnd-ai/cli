@@ -79,6 +79,11 @@ Artifacts keep backend-provided relative paths such as
 `<workspace>/.agents/skills` and Claude workspace skills in
 `<workspace>/.claude/skills`, matching each agent's discovery contract.
 
+Manifest delivery scopes are semantic: `user` targets are eligible for `root`
+and `directory` destinations, while `workspace` targets are eligible only for
+`workspace` destinations. A direct `directory` is an exact agent root, not a
+workspace, and does not receive a session hook.
+
 Manage destinations without editing JSON directly:
 
 ```sh
@@ -192,6 +197,14 @@ global binding, reads its credential from secure storage and forwards MCP
 JSON-RPC to Rails. Backend `initialize` instructions, tool descriptions and
 schemas remain canonical.
 
+Authenticated API and MCP requests advertise the running strict-SemVer version
+through `Hivemnd-Client-Version`. A non-empty allowlisted feature set is sent
+through `Hivemnd-Client-Features`; the current exact-target feature is
+`exact-delivery-targets-v1`. Both headers are bounded protocol metadata. They
+contain no paths, prompts, artifact content or authority claims, and technical
+features never create or reactivate server-owned capability grants. The MCP
+JSON-RPC body is forwarded unchanged.
+
 ```sh
 hivemnd mcp status --client codex --workspace .
 hivemnd mcp status --client claude --workspace .
@@ -216,11 +229,20 @@ $HIVEMND_HOME/organizations/<organization-key>/always-context/
   versions/<artifact-version-hash>.md
 ```
 
-The pointer records exact artifact-version IDs, targets, sizes and SHA-256
-hashes. Directories use mode `0700`, files use `0600`, version files are
-immutable and pointer updates are atomic. Invalid metadata, unsafe files, hash
-or size drift, invalid UTF-8 and host output over 10,000 bytes fail closed;
-policy context is never silently truncated.
+Cache manifest v2 records exact artifact-version IDs, delivery targets, the
+effective byte limit, sizes and SHA-256 hashes. It filters `user` context for a
+global hook and `workspace` context for a workspace hook. Cache v1 remains
+readable during migration but has only client kinds, so it is deliberately
+treated as legacy `any` scope until the next successful apply writes v2.
+Directories use mode `0700`, files use `0600`, version files are immutable and
+pointer updates are atomic. Invalid metadata, unsafe files, hash or size drift,
+invalid UTF-8 and oversized output fail closed; policy context is never
+silently truncated.
+
+The backend-advertised context limit is capped locally at 10,000 rendered UTF-8
+bytes for every client-and-scope cohort. Accounting includes one managed newline
+between selected documents and no trailing newline added by v2. Exactly the
+limit succeeds; exceeding it leaves the active pointer unchanged.
 
 Codex loads the cache from an owned `SessionStart` entry in
 `~/.codex/hooks.json` or `<workspace>/.codex/hooks.json`; Hivemnd never registers
@@ -263,8 +285,16 @@ backend responsibility, not a CLI feature.
 - Dry-run is the default; local writes require `--apply`.
 - Manifests are schema- and expiry-checked. A manifest's required
   `minimum_client_version` is validated as SemVer and enforced before any
-  artifact download, plan or write. Downloads are size- and SHA-256-checked
-  before planning begins.
+  artifact download, ownership read, plan or write. Each exact delivery target
+  may also declare a bounded strict-SemVer minimum; only a minimum applicable to
+  a selected local destination or effective hook cohort blocks synchronization,
+  and it blocks at the same pre-download boundary. Downloads are size- and
+  SHA-256-checked before planning begins.
+- During the additive compatibility window, artifacts without
+  `delivery_targets` normalize their legacy `targets` to `any` scope. This is
+  intentionally broad and must not be described as exact-scope enforcement.
+  When exact targets are present, their client kinds must agree with the sorted
+  legacy list and assignments are planned only for matching client and scope.
 - Remote content paths must remain on the configured Hivemnd origin.
 - Destination paths must remain inside their configured root and cannot traverse
   symlinks or the reserved `.hivemnd` namespace.
@@ -303,6 +333,25 @@ The CLI never changes its own installation. To accept an available update, run:
 ```sh
 npm install --global @hivemnd-ai/cli@latest
 ```
+
+## Exact-delivery rollout and rollback
+
+Use this order when enabling exact delivery in an environment:
+
+1. Deploy the additive backend response while legacy `targets` remains present,
+   and freeze publications whose safety depends on exact scope or per-target
+   minimums.
+2. Release and observe a compatible CLI with dual parsing, cache v2 and
+   `exact-delivery-targets-v1` negotiation.
+3. Raise the backend's global minimum CLI version to that compatible release.
+4. Only then enable exact-scope enforcement and lift the publication freeze.
+
+To roll back before enforcement, disable exact response negotiation while
+retaining immutable target rows and the legacy list. After organizations rely
+on scoped delivery, do not lower the global minimum or restore legacy broad
+planning unless operators explicitly accept and communicate that loss of scope
+isolation. A cache v1 already on disk remains broad until a successful v2 sync;
+rollback never rewrites user-owned files.
 
 ## Development
 

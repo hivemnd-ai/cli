@@ -14,6 +14,7 @@ import type {
   AgentAdapter,
   AgentKind,
   ContextInstructionOwnership,
+  DestinationScope,
   OwnershipEntry,
 } from "../domain.js";
 import { HivemndError } from "../errors.js";
@@ -47,6 +48,7 @@ export class FilesystemAgentAdapter implements AgentAdapter {
     private readonly ownershipRoot: string,
     readonly instructionPath?: string,
     private readonly instructionBoundary?: string,
+    readonly scope: DestinationScope = "directory",
   ) {}
 
   destination(relativePath: string): string {

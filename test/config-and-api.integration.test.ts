@@ -369,6 +369,275 @@ describe("HTTP API adapter", () => {
     });
   });
 
+  it("parses exact delivery targets and the effective always-context limit while retaining legacy compatibility", async () => {
+    const exact = wireManifest();
+    Object.assign(exact, { always_context_byte_limit: 8_000 });
+    Object.assign(exact.artifacts[0]!, {
+      delivery_targets: [
+        {
+          client_kind: "claude",
+          install_scope: "workspace",
+          minimum_client_version: "1.2.3-beta.1+build.7",
+        },
+        {
+          client_kind: "codex",
+          install_scope: "user",
+          minimum_client_version: null,
+        },
+      ],
+    });
+    const exactServer = await serve((_request, response) =>
+      response.end(JSON.stringify(exact)),
+    );
+
+    await expect(
+      new HttpApiClient(
+        exactServer.url,
+        fetch,
+        () => new Date("2026-07-25T11:00:00.000Z"),
+      ).manifest("token"),
+    ).resolves.toMatchObject({
+      alwaysContextByteLimit: 8_000,
+      artifacts: [
+        {
+          deliveryTargets: [
+            {
+              clientKind: "claude",
+              installScope: "workspace",
+              minimumClientVersion: "1.2.3-beta.1+build.7",
+            },
+            { clientKind: "codex", installScope: "user" },
+          ],
+        },
+      ],
+    });
+
+    const legacyServer = await serve((_request, response) =>
+      response.end(JSON.stringify(wireManifest())),
+    );
+    await expect(
+      new HttpApiClient(
+        legacyServer.url,
+        fetch,
+        () => new Date("2026-07-25T11:00:00.000Z"),
+      ).manifest("token"),
+    ).resolves.toMatchObject({
+      alwaysContextByteLimit: 10_000,
+      artifacts: [
+        {
+          deliveryTargets: [
+            { clientKind: "claude", installScope: "any" },
+            { clientKind: "codex", installScope: "any" },
+          ],
+        },
+      ],
+    });
+  });
+
+  it.each([
+    [
+      "legacy and exact target disagreement",
+      [
+        {
+          client_kind: "codex",
+          install_scope: "user",
+          minimum_client_version: null,
+        },
+      ],
+    ],
+    [
+      "unknown exact scope",
+      [
+        {
+          client_kind: "codex",
+          install_scope: "computer",
+          minimum_client_version: null,
+        },
+        {
+          client_kind: "claude",
+          install_scope: "workspace",
+          minimum_client_version: null,
+        },
+      ],
+    ],
+    [
+      "invalid target minimum",
+      [
+        {
+          client_kind: "codex",
+          install_scope: "user",
+          minimum_client_version: "next",
+        },
+        {
+          client_kind: "claude",
+          install_scope: "workspace",
+          minimum_client_version: null,
+        },
+      ],
+    ],
+    [
+      "oversized target minimum",
+      [
+        {
+          client_kind: "claude",
+          install_scope: "workspace",
+          minimum_client_version: `1.2.3+${"a".repeat(128)}`,
+        },
+        {
+          client_kind: "codex",
+          install_scope: "user",
+          minimum_client_version: null,
+        },
+      ],
+    ],
+  ])("rejects %s", async (_label, deliveryTargets) => {
+    const wire = wireManifest();
+    Object.assign(wire.artifacts[0]!, {
+      delivery_targets: deliveryTargets,
+    });
+    const server = await serve((_request, response) =>
+      response.end(JSON.stringify(wire)),
+    );
+
+    await expect(
+      new HttpApiClient(
+        server.url,
+        fetch,
+        () => new Date("2026-07-25T11:00:00.000Z"),
+      ).manifest("token"),
+    ).rejects.toMatchObject({ code: "MANIFEST_INVALID" });
+  });
+
+  it("rejects a legacy client-kind list that is not deterministic", async () => {
+    const wire = wireManifest();
+    Object.assign(wire.artifacts[0]!, { targets: ["codex", "claude"] });
+    const server = await serve((_request, response) =>
+      response.end(JSON.stringify(wire)),
+    );
+
+    await expect(
+      new HttpApiClient(
+        server.url,
+        fetch,
+        () => new Date("2026-07-25T11:00:00.000Z"),
+      ).manifest("token"),
+    ).rejects.toMatchObject({ code: "MANIFEST_INVALID" });
+  });
+
+  it("sends only bounded runtime compatibility metadata on authenticated API traffic", async () => {
+    const seen: Array<{
+      path: string;
+      version: string | undefined;
+      features: string | undefined;
+    }> = [];
+    const server = await serve((request, response) => {
+      seen.push({
+        path: request.url ?? "",
+        version: request.headers["hivemnd-client-version"] as
+          string | undefined,
+        features: request.headers["hivemnd-client-features"] as
+          string | undefined,
+      });
+      if (request.url?.includes("client-configuration")) {
+        const configuration = {
+          organization: { name: "Eigen", slug: "eigen" },
+          enabled_clients: ["codex"],
+        };
+        response.end(
+          JSON.stringify(
+            request.headers["hivemnd-client-features"]
+              ? {
+                  ...configuration,
+                  installation: {
+                    client_version: "0.4.0",
+                    capability_keys: ["read_artifacts"],
+                  },
+                }
+              : configuration,
+          ),
+        );
+        return;
+      }
+      response.end(JSON.stringify(wireManifest()));
+    });
+    const client = new HttpApiClient(
+      server.url,
+      fetch,
+      () => new Date("2026-07-25T11:00:00.000Z"),
+      {
+        clientVersion: "0.4.0",
+        clientFeatures: ["exact-delivery-targets-v1"],
+      },
+    );
+
+    await client.manifest("token");
+    await expect(client.clientConfiguration("token")).resolves.toMatchObject({
+      installation: {
+        clientVersion: "0.4.0",
+        capabilityKeys: ["read_artifacts"],
+      },
+    });
+    await expect(
+      new HttpApiClient(
+        server.url,
+        fetch,
+        () => new Date("2026-07-25T11:00:00.000Z"),
+        { clientVersion: "0.4.0", clientFeatures: [] },
+      ).clientConfiguration("token"),
+    ).resolves.not.toHaveProperty("installation");
+
+    expect(seen).toEqual([
+      {
+        path: "/api/v1/sync/manifest",
+        version: "0.4.0",
+        features: "exact-delivery-targets-v1",
+      },
+      {
+        path: "/api/v1/client-configuration",
+        version: "0.4.0",
+        features: "exact-delivery-targets-v1",
+      },
+      {
+        path: "/api/v1/client-configuration",
+        version: "0.4.0",
+        features: undefined,
+      },
+    ]);
+    expect(JSON.stringify(seen)).not.toMatch(
+      /workspace|artifact content|prompt|authority/i,
+    );
+  });
+
+  it.each([
+    ["invalid version", { clientVersion: "next", clientFeatures: [] }],
+    [
+      "oversized version",
+      {
+        clientVersion: `1.2.3+${"a".repeat(128)}`,
+        clientFeatures: [],
+      },
+    ],
+    [
+      "unknown feature",
+      { clientVersion: "1.2.3", clientFeatures: ["authority-v1"] },
+    ],
+    [
+      "oversized features",
+      { clientVersion: "1.2.3", clientFeatures: ["a".repeat(129)] },
+    ],
+  ])("rejects %s metadata before network access", async (_label, metadata) => {
+    const fetcher = vi.fn<typeof fetch>();
+    await expect(
+      new HttpApiClient(
+        "https://shared.hivemnd.cloud/eigen",
+        fetcher,
+        () => new Date("2026-07-25T11:00:00.000Z"),
+        metadata,
+      ).clientConfiguration("token"),
+    ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("returns stable typed failures for HTTP, schema, expiry, enrollment, and cross-origin paths", async () => {
     const failure = await serve((_request, response) => {
       response.statusCode = 500;

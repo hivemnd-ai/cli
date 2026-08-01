@@ -5,6 +5,8 @@ export interface SemanticVersion {
   readonly prerelease: readonly (number | string)[];
 }
 
+export const MAX_SEMVER_BYTES = 128;
+
 const semanticVersionPattern =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
@@ -23,6 +25,13 @@ export function parseSemver(value: string): SemanticVersion | undefined {
           )
       : [],
   };
+}
+
+export function isBoundedSemver(value: string): boolean {
+  return (
+    Buffer.byteLength(value) <= MAX_SEMVER_BYTES &&
+    parseSemver(value) !== undefined
+  );
 }
 
 export function isStableSemver(value: string): boolean {

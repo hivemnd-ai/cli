@@ -81,6 +81,7 @@ async function setup(
     id: () => "receipt-id",
     clientPlatform: "test-platform",
     clientVersion: "9.8.7-test",
+    clientFeatures: ["exact-delivery-targets-v1"],
     updateService: {
       check: async () => ({
         checked: false,
@@ -1017,6 +1018,101 @@ describe("sync command", () => {
     expect(deps.output.errors).toEqual([
       "[CLIENT_UPDATE_REQUIRED] Hivemnd CLI 2.0.0 or newer is required; installed: 1.2.3. Run: npm install --global @hivemnd-ai/cli@latest",
     ]);
+  });
+
+  it("rejects an incompatible applicable delivery target before download or ownership reads", async () => {
+    const selectedApi = api();
+    const download = vi.fn((token: string, artifact: ManifestArtifact) =>
+      selectedApi.download(token, artifact),
+    );
+    const { deps } = await setup({
+      clientVersion: "1.2.3",
+      selectedApi: {
+        ...selectedApi,
+        manifest: async () => {
+          const current = await selectedApi.manifest("token");
+          return {
+            ...current,
+            artifacts: current.artifacts.map((artifact) => ({
+              ...artifact,
+              deliveryTargets: [
+                {
+                  clientKind: "codex",
+                  installScope: "workspace",
+                  minimumClientVersion: "2.0.0",
+                },
+                {
+                  clientKind: "claude",
+                  installScope: "workspace",
+                },
+              ],
+            })),
+          };
+        },
+        download,
+      },
+    });
+    const ownershipRead = vi.fn(async () => []);
+    const adapterFactory: RuntimeDependencies["adapterFactory"] = (
+      value,
+      names,
+    ) => {
+      const adapters = deps.adapterFactory(value, names);
+      for (const adapter of adapters) {
+        vi.spyOn(adapter, "readOwnership").mockImplementation(ownershipRead);
+      }
+      return adapters;
+    };
+
+    await expect(
+      runCli(["sync", "--destination", "codex-workspace", "--apply"], {
+        ...deps,
+        adapterFactory,
+      }),
+    ).resolves.toBe(1);
+    expect(download).not.toHaveBeenCalled();
+    expect(ownershipRead).not.toHaveBeenCalled();
+    expect(deps.output.errors.at(-1)).toContain(
+      "Hivemnd CLI 2.0.0 or newer is required",
+    );
+  });
+
+  it("does not block a selected workspace for an incompatible non-applicable user target", async () => {
+    const selectedApi = api();
+    const { deps } = await setup({
+      clientVersion: "1.2.3",
+      selectedApi: {
+        ...selectedApi,
+        manifest: async () => {
+          const current = await selectedApi.manifest("token");
+          return {
+            ...current,
+            artifacts: current.artifacts.map((artifact) => ({
+              ...artifact,
+              deliveryTargets: [
+                {
+                  clientKind: "codex",
+                  installScope: "user",
+                  minimumClientVersion: "2.0.0",
+                },
+                {
+                  clientKind: "claude",
+                  installScope: "workspace",
+                },
+              ],
+            })),
+          };
+        },
+      },
+    });
+
+    await expect(
+      runCli(["sync", "--destination", "codex-workspace"], deps),
+    ).resolves.toBe(0);
+    expect(deps.output.errors).toEqual([]);
+    expect(deps.output.messages.join("\n")).not.toMatch(
+      /^create\s+codex-workspace/m,
+    );
   });
 
   it("rejects --all combined with a path or named destination", async () => {
