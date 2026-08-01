@@ -21,6 +21,10 @@ export interface AlwaysContextCacheApplication {
   readonly change: AlwaysContextCacheChange;
 }
 
+export interface SyncCommitParticipant {
+  stage(result: ApplyResult): Promise<void>;
+}
+
 interface AdapterSnapshot {
   readonly adapter: AgentAdapter;
   readonly ownership: readonly OwnershipEntry[];
@@ -38,6 +42,7 @@ export class SyncApplier {
     adapters: readonly AgentAdapter[],
     contextChanges: readonly ContextInstructionChange[] = [],
     cacheApplication?: AlwaysContextCacheApplication,
+    commitParticipant?: SyncCommitParticipant,
   ): Promise<ApplyResult> {
     const conflicts = [
       ...changes.filter((change) => change.kind === "conflict"),
@@ -169,6 +174,7 @@ export class SyncApplier {
       if (cacheApplication) {
         await cacheApplication.cache.apply(cacheApplication.change);
       }
+      await commitParticipant?.stage(applyResult(changes, cacheApplication));
     } catch (error: unknown) {
       await rollback(snapshots);
       if (cacheApplication && cacheSnapshot) {
@@ -181,47 +187,52 @@ export class SyncApplier {
       );
     }
 
-    return {
-      applied:
-        changes.filter((change) =>
-          ["adopt", "create", "update", "remove"].includes(change.kind),
-        ).length +
-        (cacheApplication && cacheApplication.change.kind !== "unchanged"
-          ? 1
-          : 0),
-      operations: [
-        ...changes.map((change) => ({
-          artifactVersionId:
-            change.kind === "remove"
-              ? requireOwned(change).artifactVersionId
-              : requireArtifact(change).artifactVersionId,
-          target: change.agent,
-          action: (change.kind === "adopt"
-            ? "unchanged"
-            : change.kind) as ReceiptAction,
+    return applyResult(changes, cacheApplication);
+  }
+}
+
+function applyResult(
+  changes: readonly SyncChange[],
+  cacheApplication?: AlwaysContextCacheApplication,
+): ApplyResult {
+  return {
+    applied:
+      changes.filter((change) =>
+        ["adopt", "create", "update", "remove"].includes(change.kind),
+      ).length +
+      (cacheApplication && cacheApplication.change.kind !== "unchanged"
+        ? 1
+        : 0),
+    operations: [
+      ...changes.map((change) => ({
+        artifactVersionId:
+          change.kind === "remove"
+            ? requireOwned(change).artifactVersionId
+            : requireArtifact(change).artifactVersionId,
+        target: change.agent,
+        action: (change.kind === "adopt"
+          ? "unchanged"
+          : change.kind) as ReceiptAction,
+        result:
+          change.kind === "unchanged" || change.kind === "adopt"
+            ? ("skipped" as const)
+            : ("applied" as const),
+      })),
+      ...(cacheApplication?.change.manifest?.entries.flatMap((entry) =>
+        [
+          ...new Set(entry.deliveryTargets.map((target) => target.clientKind)),
+        ].map((target) => ({
+          artifactVersionId: entry.artifactVersionId,
+          target,
+          action: "unchanged" as const,
           result:
-            change.kind === "unchanged" || change.kind === "adopt"
+            cacheApplication.change.kind === "unchanged"
               ? ("skipped" as const)
               : ("applied" as const),
         })),
-        ...(cacheApplication?.change.manifest?.entries.flatMap((entry) =>
-          [
-            ...new Set(
-              entry.deliveryTargets.map((target) => target.clientKind),
-            ),
-          ].map((target) => ({
-            artifactVersionId: entry.artifactVersionId,
-            target,
-            action: "unchanged" as const,
-            result:
-              cacheApplication.change.kind === "unchanged"
-                ? ("skipped" as const)
-                : ("applied" as const),
-          })),
-        ) ?? []),
-      ],
-    };
-  }
+      ) ?? []),
+    ],
+  };
 }
 
 async function rollback(snapshots: readonly AdapterSnapshot[]): Promise<void> {

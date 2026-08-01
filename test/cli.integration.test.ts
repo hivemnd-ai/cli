@@ -199,7 +199,10 @@ describe("configuration commands", () => {
         deps,
       ),
     ).resolves.toBe(0);
-    expect(JSON.parse(await readFile(newPath, "utf8"))).toEqual({
+    const configured = JSON.parse(
+      await readFile(newPath, "utf8"),
+    ) as HivemndConfig;
+    expect(configured).toMatchObject({
       apiUrl: "https://company.test",
       destinations: [
         { name: "codex-global", agent: "codex", scope: "root" },
@@ -217,6 +220,11 @@ describe("configuration commands", () => {
         },
       ],
     });
+    expect(configured.destinations.map(({ id }) => id)).toEqual([
+      expect.stringMatching(/^[0-9a-f-]{36}$/),
+      expect.stringMatching(/^[0-9a-f-]{36}$/),
+      expect.stringMatching(/^[0-9a-f-]{36}$/),
+    ]);
     deps.output.messages.length = 0;
     await expect(
       runCli(["--config", newPath, "config", "show"], deps),

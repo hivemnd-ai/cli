@@ -316,7 +316,7 @@ describe("interactive onboarding", () => {
     );
 
     expect((await repository.load(configPath)).destinations).toContainEqual(
-      original.destinations[0],
+      expect.objectContaining(original.destinations[0]!),
     );
     expect(schedule.install).not.toHaveBeenCalled();
     expect(messages.join("\n")).toContain("Automatic sync: installed, active");

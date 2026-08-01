@@ -27,6 +27,7 @@ export interface ManifestDeliveryTarget {
 }
 
 export interface DestinationConfig {
+  readonly id?: string | undefined;
   readonly name: string;
   readonly agent: AgentKind;
   readonly scope: DestinationScope;
@@ -45,6 +46,9 @@ export interface ClientConfiguration {
     | {
         readonly clientVersion: string;
         readonly capabilityKeys: readonly string[];
+        readonly lastClientSequence?: number | null;
+        readonly nextObservationSequence?: number | null;
+        readonly sequenceExhausted?: boolean;
       }
     | undefined;
 }
@@ -136,11 +140,12 @@ export interface SyncChange {
   readonly destination: string;
   readonly kind: ChangeKind;
   readonly conflictReason?: ConflictReason;
+  readonly observedArtifactVersionId?: string | null;
 }
 
 export interface ApplyResult {
   readonly applied: number;
-  readonly operations: SyncReceipt["operations"];
+  readonly operations: LegacySyncReceipt["operations"];
 }
 
 export interface ResolvedToken {
@@ -223,7 +228,7 @@ export interface SourceSchema {
 }
 
 export type ReceiptAction = "create" | "update" | "remove" | "unchanged";
-export interface SyncReceipt {
+export interface LegacySyncReceipt {
   readonly idempotencyKey: string;
   readonly releaseId: string;
   readonly status: "applied";
@@ -234,6 +239,49 @@ export interface SyncReceipt {
     readonly result: "applied" | "skipped";
   }[];
 }
+
+export type DeliveryObservationStatus = "applied" | "blocked" | "failed";
+export type DeliveryObservationOutcome =
+  "applied" | "unchanged" | "removed" | "conflict" | "failed";
+export type DeliveryObservationReason =
+  | "created"
+  | "updated"
+  | "adopted"
+  | "already_current"
+  | "no_longer_desired"
+  | "unmanaged_existing_file"
+  | "owned_file_missing"
+  | "owned_content_drift"
+  | "artifact_ownership_mismatch"
+  | "local_apply_failed"
+  | "rollback_failed";
+
+export interface DeliveryObservationOperation {
+  readonly artifactId: string;
+  readonly artifactVersionId: string;
+  readonly observedArtifactVersionId: string | null;
+  readonly outcome: DeliveryObservationOutcome;
+  readonly reason: DeliveryObservationReason;
+}
+
+export interface DeliveryObservationDestination {
+  readonly id: string;
+  readonly label: string;
+  readonly clientKind: AgentKind;
+  readonly installScope: InstallScope;
+  readonly selected: boolean;
+  readonly operations: readonly DeliveryObservationOperation[];
+}
+
+export interface DeliveryObservationReceipt {
+  readonly idempotencyKey: string;
+  readonly clientSequence: number;
+  readonly releaseId: string;
+  readonly status: DeliveryObservationStatus;
+  readonly destinations: readonly DeliveryObservationDestination[];
+}
+
+export type SyncReceipt = LegacySyncReceipt | DeliveryObservationReceipt;
 
 export interface ApiClient {
   previewEnrollment(enrollmentToken: string): Promise<ClientConfiguration>;

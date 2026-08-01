@@ -62,6 +62,14 @@ export class SyncPlanner {
                   ? "unchanged"
                   : "update",
           ...(conflictReason && !adopt ? { conflictReason } : {}),
+          ...(conflictReason && owned
+            ? {
+                observedArtifactVersionId:
+                  current !== undefined && sha256(current) === owned.sha256
+                    ? owned.artifactVersionId
+                    : null,
+              }
+            : {}),
         });
         ownership.delete(artifact.relativePath);
       }
@@ -77,6 +85,7 @@ export class SyncPlanner {
           destination: adapter.destination(owned.relativePath),
           kind: conflictReason ? "conflict" : "remove",
           ...(conflictReason ? { conflictReason } : {}),
+          ...(conflictReason ? { observedArtifactVersionId: null } : {}),
         });
       }
     }

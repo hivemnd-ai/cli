@@ -100,8 +100,37 @@ const clientConfigurationSchema = z
       .object({
         client_version: z.string().min(1),
         capability_keys: z.array(z.string().min(1)),
+        last_client_sequence: z
+          .number()
+          .int()
+          .min(1)
+          .max(9_007_199_254_740_991)
+          .nullable()
+          .optional(),
+        next_observation_sequence: z
+          .number()
+          .int()
+          .min(1)
+          .max(9_007_199_254_740_991)
+          .nullable()
+          .optional(),
+        sequence_exhausted: z.boolean().optional(),
       })
       .strict()
+      .superRefine((installation, context) => {
+        const values = [
+          installation.last_client_sequence,
+          installation.next_observation_sequence,
+          installation.sequence_exhausted,
+        ];
+        const supplied = values.filter((value) => value !== undefined).length;
+        if (supplied !== 0 && supplied !== values.length) {
+          context.addIssue({
+            code: "custom",
+            message: "Observation sequence bootstrap must be complete",
+          });
+        }
+      })
       .optional(),
   })
   .strict();
@@ -348,17 +377,44 @@ export class HttpApiClient implements ApiClient {
   }
 
   async receipt(token: string, receipt: SyncReceipt): Promise<void> {
-    await this.request(apiPaths.receipts, token, "POST", {
-      idempotency_key: receipt.idempotencyKey,
-      release_id: receipt.releaseId,
-      status: receipt.status,
-      operations: receipt.operations.map((operation) => ({
-        artifact_version_id: operation.artifactVersionId,
-        target: operation.target,
-        action: operation.action,
-        result: operation.result,
-      })),
-    });
+    await this.request(
+      apiPaths.receipts,
+      token,
+      "POST",
+      "clientSequence" in receipt
+        ? {
+            idempotency_key: receipt.idempotencyKey,
+            client_sequence: receipt.clientSequence,
+            release_id: receipt.releaseId,
+            status: receipt.status,
+            destinations: receipt.destinations.map((destination) => ({
+              id: destination.id,
+              label: destination.label,
+              client_kind: destination.clientKind,
+              install_scope: destination.installScope,
+              selected: destination.selected,
+              operations: destination.operations.map((operation) => ({
+                artifact_id: operation.artifactId,
+                artifact_version_id: operation.artifactVersionId,
+                observed_artifact_version_id:
+                  operation.observedArtifactVersionId,
+                outcome: operation.outcome,
+                reason: operation.reason,
+              })),
+            })),
+          }
+        : {
+            idempotency_key: receipt.idempotencyKey,
+            release_id: receipt.releaseId,
+            status: receipt.status,
+            operations: receipt.operations.map((operation) => ({
+              artifact_version_id: operation.artifactVersionId,
+              target: operation.target,
+              action: operation.action,
+              result: operation.result,
+            })),
+          },
+    );
   }
 
   private async parseClientConfiguration(
@@ -374,6 +430,15 @@ export class HttpApiClient implements ApiClient {
               installation: {
                 clientVersion: value.installation.client_version,
                 capabilityKeys: value.installation.capability_keys,
+                ...(value.installation.sequence_exhausted === undefined
+                  ? {}
+                  : {
+                      lastClientSequence:
+                        value.installation.last_client_sequence ?? null,
+                      nextObservationSequence:
+                        value.installation.next_observation_sequence ?? null,
+                      sequenceExhausted: value.installation.sequence_exhausted,
+                    }),
               },
             }
           : {}),

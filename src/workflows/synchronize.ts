@@ -1,4 +1,4 @@
-import type { CliContext } from "../cli/context.js";
+import type { AuthenticatedContext, CliContext } from "../cli/context.js";
 import { asHivemndError, HivemndError } from "../errors.js";
 import { SyncApplier } from "../sync/applier.js";
 import { SyncPlanner } from "../sync/planner.js";
@@ -13,6 +13,21 @@ import { join } from "node:path";
 import { selectContextualDestinationNames } from "../workspaces/destinations.js";
 import { assertCompatibleDeliveryTargets } from "../sync/delivery-targets.js";
 import { isAlwaysContextArtifact } from "../context/always-context-cache.js";
+import type { AlwaysContextCacheChange } from "../context/always-context-cache.js";
+import {
+  ReceiptOutbox,
+  type ObservationBootstrap,
+} from "../sync/receipt-outbox.js";
+import { buildDeliveryObservationReceipt } from "../sync/receipt.js";
+import type {
+  AgentAdapter,
+  ClientConfiguration,
+  ContextInstructionChange,
+  DeliveryObservationReceipt,
+  DeliveryObservationStatus,
+  PreparedManifest,
+  SyncChange,
+} from "../domain.js";
 
 export interface SynchronizationOptions {
   readonly dryRun: boolean;
@@ -40,9 +55,38 @@ export async function synchronize(
       "Use --all without a path or --destination",
     );
   }
-  const { config, token, client } = await context.bootstrap(undefined, {
+  const authenticated = await context.bootstrap(undefined, {
     ...(options.path ? { workspace: options.path } : {}),
   });
+  const stateDirectory =
+    dependencies.environment.HIVEMND_HOME ??
+    join(dependencies.homeDirectory, ".hivemnd");
+  const outbox = new ReceiptOutbox({
+    stateDirectory,
+    apiUrl: authenticated.config.apiUrl,
+  });
+  await outbox.withLock(() =>
+    synchronizeAuthenticated(options, context, authenticated, outbox),
+  );
+}
+
+async function synchronizeAuthenticated(
+  options: SynchronizationOptions,
+  context: CliContext,
+  authenticated: AuthenticatedContext,
+  outbox: ReceiptOutbox,
+): Promise<void> {
+  const { dependencies } = context;
+  const { config, token, client } = authenticated;
+  const retried = await outbox.deliverPending(client, token.value);
+  if (retried.accepted > 0) {
+    dependencies.output.write(`receipt retry: accepted ${retried.accepted}`);
+  }
+  if (retried.deferredCode) {
+    dependencies.output.write(
+      `receipt retry: deferred (${retried.deferredCode})`,
+    );
+  }
   if (options.all && config.destinations.length === 0) {
     dependencies.output.write(
       options.apply
@@ -134,25 +178,157 @@ export async function synchronize(
     );
     return;
   }
+  const configuration = await client.clientConfiguration(token.value);
+  const bootstrap = observationBootstrap(configuration.installation);
+  if (!bootstrap) {
+    await applyWithLegacyReceipt({
+      prepared,
+      changes,
+      adapters,
+      contextChanges,
+      cache,
+      cacheChange,
+      context,
+      authenticated,
+    });
+    return;
+  }
+  const clientSequence = await outbox.allocate(bootstrap);
+  const idempotencyKey = dependencies.id();
+  const selectedDestinationNames = adapters.map(({ name }) => name);
+  const conflicts = [
+    ...changes.filter(({ kind }) => kind === "conflict"),
+    ...contextChanges.filter(({ kind }) => kind === "conflict"),
+  ];
+  if (conflicts.length > 0) {
+    const receipt = receiptFor("blocked");
+    await outbox.assertCapacity(receipt);
+    await outbox.stage(receipt);
+    await deliverCurrent(outbox, client, token.value, (message) => {
+      dependencies.output.write(message);
+    });
+    throw new HivemndError(
+      "SYNC_CONFLICT",
+      `Cannot apply synchronization with ${conflicts.length} conflict(s)`,
+    );
+  }
+  const successfulReceipt = receiptFor("applied");
+  await outbox.assertCapacity(successfulReceipt);
+  try {
+    const result = await new SyncApplier().apply(
+      prepared,
+      changes,
+      adapters,
+      contextChanges,
+      { cache, change: cacheChange },
+      { stage: () => outbox.stage(successfulReceipt) },
+    );
+    dependencies.output.write(`applied: ${result.applied} change(s)`);
+  } catch (error: unknown) {
+    const failedReceipt = receiptFor("failed");
+    try {
+      await outbox.assertCapacity(failedReceipt);
+      await outbox.stage(failedReceipt);
+      await deliverCurrent(outbox, client, token.value, (message) => {
+        dependencies.output.write(message);
+      });
+    } catch {
+      // The original synchronization error remains the primary failure. A failed
+      // stage has no partial entry and the applier has already restored local state.
+    }
+    throw error;
+  }
+  await deliverCurrent(outbox, client, token.value, (message) => {
+    dependencies.output.write(message);
+  });
+
+  function receiptFor(
+    status: DeliveryObservationStatus,
+  ): DeliveryObservationReceipt {
+    return buildDeliveryObservationReceipt({
+      idempotencyKey,
+      clientSequence,
+      releaseId: manifest.release.id,
+      status,
+      config,
+      selectedDestinationNames,
+      changes,
+      alwaysContextArtifacts: prepared.artifacts.filter(
+        isAlwaysContextArtifact,
+      ),
+      ...(status === "blocked"
+        ? {}
+        : {
+            alwaysContextResult:
+              status === "failed"
+                ? ("failed" as const)
+                : cacheChange.kind === "unchanged"
+                  ? ("unchanged" as const)
+                  : ("applied" as const),
+          }),
+    });
+  }
+}
+
+function observationBootstrap(
+  installation: ClientConfiguration["installation"],
+): ObservationBootstrap | undefined {
+  if (installation?.sequenceExhausted === undefined) return undefined;
+  return {
+    lastClientSequence: installation.lastClientSequence ?? null,
+    nextObservationSequence: installation.nextObservationSequence ?? null,
+    sequenceExhausted: installation.sequenceExhausted,
+  };
+}
+
+async function applyWithLegacyReceipt(options: {
+  readonly prepared: PreparedManifest;
+  readonly changes: readonly SyncChange[];
+  readonly adapters: readonly AgentAdapter[];
+  readonly contextChanges: readonly ContextInstructionChange[];
+  readonly cache: AlwaysContextCache;
+  readonly cacheChange: AlwaysContextCacheChange;
+  readonly context: CliContext;
+  readonly authenticated: AuthenticatedContext;
+}): Promise<void> {
+  const { dependencies } = options.context;
   const result = await new SyncApplier().apply(
-    prepared,
-    changes,
-    adapters,
-    contextChanges,
-    { cache, change: cacheChange },
+    options.prepared,
+    options.changes,
+    options.adapters,
+    options.contextChanges,
+    { cache: options.cache, change: options.cacheChange },
   );
   dependencies.output.write(`applied: ${result.applied} change(s)`);
   try {
-    await client.receipt(token.value, {
-      idempotencyKey: dependencies.id(),
-      releaseId: manifest.release.id,
-      status: "applied",
-      operations: result.operations,
-    });
+    await options.authenticated.client.receipt(
+      options.authenticated.token.value,
+      {
+        idempotencyKey: dependencies.id(),
+        releaseId: options.prepared.release.id,
+        status: "applied",
+        operations: result.operations,
+      },
+    );
     dependencies.output.write("receipt: accepted");
   } catch (error: unknown) {
-    const failure = asHivemndError(error);
-    dependencies.output.write(`receipt: deferred (${failure.code})`);
+    dependencies.output.write(
+      `receipt: deferred (${asHivemndError(error).code})`,
+    );
+  }
+}
+
+async function deliverCurrent(
+  outbox: ReceiptOutbox,
+  client: AuthenticatedContext["client"],
+  token: string,
+  write: (message: string) => void,
+): Promise<void> {
+  const delivered = await outbox.deliverPending(client, token);
+  if (delivered.deferredCode) {
+    write(`receipt: deferred (${delivered.deferredCode})`);
+  } else {
+    write("receipt: accepted");
   }
 }
 

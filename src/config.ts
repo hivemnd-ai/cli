@@ -28,6 +28,7 @@ const configSchema = z.object({
     .array(
       z
         .object({
+          id: z.uuid().optional(),
           name: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,62}$/),
           agent: z.enum(agentKinds),
           scope: z.enum(destinationScopes),
@@ -62,6 +63,13 @@ const configSchema = z.object({
         new Set(destinations.map(({ name }) => name)).size ===
         destinations.length,
       { message: "Destination names must be unique" },
+    )
+    .refine(
+      (destinations) => {
+        const ids = destinations.flatMap(({ id }) => (id ? [id] : []));
+        return new Set(ids).size === ids.length;
+      },
+      { message: "Destination identifiers must be unique" },
     ),
 });
 
@@ -71,7 +79,10 @@ export class ConfigRepository {
   async load(path: string): Promise<HivemndConfig> {
     try {
       const contents = await readFile(this.absolute(path), "utf8");
-      return configSchema.parse(JSON.parse(contents) as unknown);
+      const parsed = parseConfig(JSON.parse(contents) as unknown);
+      return parsed.upgraded
+        ? await this.upgradeLegacyDestinations(path)
+        : parsed.config;
     } catch (error: unknown) {
       throw new HivemndError("CONFIG_INVALID", `Cannot load config: ${path}`, {
         cause: error,
@@ -82,7 +93,10 @@ export class ConfigRepository {
   async loadOptional(path: string): Promise<HivemndConfig | undefined> {
     try {
       const contents = await readFile(this.absolute(path), "utf8");
-      return configSchema.parse(JSON.parse(contents) as unknown);
+      const parsed = parseConfig(JSON.parse(contents) as unknown);
+      return parsed.upgraded
+        ? await this.upgradeLegacyDestinations(path)
+        : parsed.config;
     } catch (error: unknown) {
       if (isNodeError(error) && error.code === "ENOENT") return undefined;
       throw new HivemndError("CONFIG_INVALID", `Cannot load config: ${path}`, {
@@ -95,6 +109,14 @@ export class ConfigRepository {
     path: string,
     config: HivemndConfig,
     overwrite = false,
+  ): Promise<void> {
+    await this.write(path, parseConfig(config).config, overwrite);
+  }
+
+  private async write(
+    path: string,
+    config: HivemndConfig,
+    overwrite: boolean,
   ): Promise<void> {
     const parsed = configSchema.parse(config);
     const destination = this.absolute(path);
@@ -126,11 +148,11 @@ export class ConfigRepository {
     destination: DestinationConfig,
   ): Promise<HivemndConfig> {
     const config = await this.load(path);
-    const updated = configSchema.parse({
+    const updated = parseConfig({
       ...config,
       destinations: [...config.destinations, destination],
-    });
-    await this.create(path, updated, true);
+    }).config;
+    await this.write(path, updated, true);
     return updated;
   }
 
@@ -152,6 +174,50 @@ export class ConfigRepository {
   private absolute(path: string): string {
     return isAbsolute(path) ? path : resolve(this.cwd, path);
   }
+
+  private async upgradeLegacyDestinations(
+    path: string,
+  ): Promise<HivemndConfig> {
+    const lock = `${this.absolute(path)}.hivemnd-upgrade.lock`;
+    try {
+      await mkdir(lock, { mode: 0o700 });
+    } catch (error: unknown) {
+      /* v8 ignore else -- EEXIST is the only actionable lock failure */
+      if (isNodeError(error) && error.code === "EEXIST") {
+        throw new HivemndError(
+          "CONFIG_INVALID",
+          "Another process is upgrading this Hivemnd configuration",
+          { cause: error },
+        );
+      }
+      /* v8 ignore next -- defensive propagation for unexpected OS lock failures */
+      throw error;
+    }
+    try {
+      const current = parseConfig(
+        JSON.parse(await readFile(this.absolute(path), "utf8")) as unknown,
+      );
+      /* v8 ignore else -- another process cannot replace the config while this exclusive upgrade lock is held */
+      if (current.upgraded) await this.write(path, current.config, true);
+      return current.config;
+    } finally {
+      await rm(lock, { recursive: true, force: true });
+    }
+  }
+}
+
+function parseConfig(value: unknown): {
+  readonly config: HivemndConfig;
+  readonly upgraded: boolean;
+} {
+  const parsed = configSchema.parse(value);
+  let upgraded = false;
+  const destinations = parsed.destinations.map((destination) => {
+    if (destination.id) return destination;
+    upgraded = true;
+    return { ...destination, id: randomUUID() };
+  });
+  return { config: { ...parsed, destinations }, upgraded };
 }
 
 export async function loadConfig(
