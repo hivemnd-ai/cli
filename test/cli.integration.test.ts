@@ -1724,7 +1724,7 @@ describe("command shell", () => {
     expect(defaultDependencies.clientPlatform).toBe(
       `${process.platform}-${process.arch}`,
     );
-    expect(defaultDependencies.clientVersion).toBe("0.4.0");
+    expect(defaultDependencies.clientVersion).toBe("0.5.1");
     expect(
       defaultDependencies.scheduleManagerFactory({
         apiUrl: "https://shared.hivemnd.cloud/eigen",
