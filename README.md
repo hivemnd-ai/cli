@@ -68,6 +68,11 @@ Each destination has an independent name, agent, scope and ownership ledger.
 Several destinations can use the same agent, so one invocation can keep skills
 available globally and in several workspaces.
 
+Each configured destination also owns a private random UUID. The CLI adds it
+atomically to older configuration the next time that configuration is loaded.
+The UUID remains stable when the label or local path changes; it is never
+derived from, or sent together with, the path, username or hostname.
+
 | Scope       | `--path`            | Codex installation root | Claude installation root |
 | ----------- | ------------------- | ----------------------- | ------------------------ |
 | `root`      | omitted             | `~/.agents`             | `~/.claude`              |
@@ -306,8 +311,23 @@ backend responsibility, not a CLI feature.
 - Ownership state is isolated under
   `~/.hivemnd/destinations/<origin-id>/<destination>/ownership.json`. It stores
   IDs and hashes, never credentials or artifact content.
-- Applied receipts contain artifact-version IDs, agent targets and outcomes
-  only. Receipt delivery is best-effort after local success.
+- Compatible backends negotiate one monotonic observation sequence per
+  installation. A terminal apply stages a normalized receipt inside the same
+  rollback boundary as files, ownership ledgers and the active context pointer;
+  local success is not reported until that private receipt is durable.
+- Pending receipts live below
+  `$HIVEMND_HOME/organizations/<organization-key>/receipt-outbox/` with `0700`
+  directories and `0600` files. They contain opaque destination IDs, safe
+  labels, exact client/scope targets, artifact-version IDs and finite outcomes
+  only—never the bearer credential, local paths, content or arbitrary errors.
+  The outbox is capped at 256 entries or 8 MiB and blocks new mutation before
+  capacity would be exceeded.
+- Delivery is retried FIFO with the current credential. Exact replay removes
+  the entry after acceptance and never repeats planning or filesystem work.
+  An exhausted safe-integer sequence stops before local mutation and requires
+  explicit installation re-enrollment or rotation; it never wraps or resets.
+- Older compatible backends retain the legacy best-effort release receipt path
+  until the v2 bootstrap fields are available.
 
 Manifest signature verification remains unimplemented until the backend
 signing-key distribution and canonicalization contract is approved. TLS,

@@ -33,12 +33,15 @@ describe("configuration repository", () => {
     const value = config(temp.path);
 
     await repository.create("nested/hivemnd.json", value);
-    await expect(repository.load("nested/hivemnd.json")).resolves.toEqual(
-      value,
-    );
+    const created = await repository.load("nested/hivemnd.json");
+    expect(created).toMatchObject(value);
+    expect(created.destinations.map(({ id }) => id)).toEqual([
+      expect.stringMatching(/^[0-9a-f-]{36}$/),
+      expect.stringMatching(/^[0-9a-f-]{36}$/),
+    ]);
     await expect(
       loadConfig(join(temp.path, "nested/hivemnd.json"), "/elsewhere"),
-    ).resolves.toEqual(value);
+    ).resolves.toEqual(created);
     await expect(
       repository.create("nested/hivemnd.json", value),
     ).rejects.toMatchObject({
@@ -267,14 +270,25 @@ describe("HTTP API adapter", () => {
       request.on("end", () => {
         requests.push({ path: request.url, method: request.method, body });
         response.statusCode = 200;
-        if (
-          request.url === "/api/v1/enrollments/preview" ||
-          request.url === "/api/v1/client-configuration"
-        ) {
+        if (request.url === "/api/v1/enrollments/preview") {
           response.end(
             JSON.stringify({
               organization: { name: "Eigen", slug: "eigen" },
               enabled_clients: ["codex", "claude"],
+            }),
+          );
+        } else if (request.url === "/api/v1/client-configuration") {
+          response.end(
+            JSON.stringify({
+              organization: { name: "Eigen", slug: "eigen" },
+              enabled_clients: ["codex", "claude"],
+              installation: {
+                client_version: "0.4.0",
+                capability_keys: ["read_artifacts"],
+                last_client_sequence: 8,
+                next_observation_sequence: 9,
+                sequence_exhausted: false,
+              },
             }),
           );
         } else if (request.url === "/api/v1/enrollments/exchange") {
@@ -307,6 +321,13 @@ describe("HTTP API adapter", () => {
     await expect(client.clientConfiguration("bearer")).resolves.toEqual({
       organization: { name: "Eigen", slug: "eigen" },
       enabledClients: ["codex", "claude"],
+      installation: {
+        clientVersion: "0.4.0",
+        capabilityKeys: ["read_artifacts"],
+        lastClientSequence: 8,
+        nextObservationSequence: 9,
+        sequenceExhausted: false,
+      },
     });
     await expect(
       client
@@ -338,12 +359,39 @@ describe("HTTP API adapter", () => {
         ],
       }),
     ).resolves.toBeUndefined();
+    await expect(
+      client.receipt("bearer", {
+        idempotencyKey: "70000000-0000-4000-8000-000000000001",
+        clientSequence: 9,
+        releaseId: "70000000-0000-4000-8000-000000000002",
+        status: "blocked",
+        destinations: [
+          {
+            id: "70000000-0000-4000-8000-000000000003",
+            label: "codex-user",
+            clientKind: "codex",
+            installScope: "user",
+            selected: true,
+            operations: [
+              {
+                artifactId: "70000000-0000-4000-8000-000000000004",
+                artifactVersionId: "70000000-0000-4000-8000-000000000005",
+                observedArtifactVersionId: null,
+                outcome: "conflict",
+                reason: "unmanaged_existing_file",
+              },
+            ],
+          },
+        ],
+      }),
+    ).resolves.toBeUndefined();
     expect(requests.map(({ path, method }) => ({ path, method }))).toEqual([
       { path: "/api/v1/sync/manifest", method: "GET" },
       { path: "/api/v1/enrollments/preview", method: "POST" },
       { path: "/api/v1/client-configuration", method: "GET" },
       { path: "/api/v1/artifact-versions/version-1/content", method: "GET" },
       { path: "/api/v1/enrollments/exchange", method: "POST" },
+      { path: "/api/v1/sync/receipts", method: "POST" },
       { path: "/api/v1/sync/receipts", method: "POST" },
     ]);
     expect(JSON.parse(requests[1]!.body)).toEqual({
@@ -356,6 +404,30 @@ describe("HTTP API adapter", () => {
       client_version: "0.1.0",
     });
     expect(requests[5]!.body).toContain('"idempotency_key":"receipt-1"');
+    expect(JSON.parse(requests[6]!.body)).toEqual({
+      idempotency_key: "70000000-0000-4000-8000-000000000001",
+      client_sequence: 9,
+      release_id: "70000000-0000-4000-8000-000000000002",
+      status: "blocked",
+      destinations: [
+        {
+          id: "70000000-0000-4000-8000-000000000003",
+          label: "codex-user",
+          client_kind: "codex",
+          install_scope: "user",
+          selected: true,
+          operations: [
+            {
+              artifact_id: "70000000-0000-4000-8000-000000000004",
+              artifact_version_id: "70000000-0000-4000-8000-000000000005",
+              observed_artifact_version_id: null,
+              outcome: "conflict",
+              reason: "unmanaged_existing_file",
+            },
+          ],
+        },
+      ],
+    });
 
     const currentManifest = wireManifest(content);
     currentManifest.expires_at = "2099-01-01T00:00:00.000Z";
@@ -366,6 +438,55 @@ describe("HTTP API adapter", () => {
       new HttpApiClient(defaultClock.url).manifest("token"),
     ).resolves.toMatchObject({
       release: { id: "release-1" },
+    });
+  });
+
+  it("accepts an empty observation checkpoint and rejects a partial bootstrap", async () => {
+    let requests = 0;
+    const { url } = await serve((_request, response) => {
+      requests += 1;
+      response.end(
+        JSON.stringify({
+          organization: { name: "Eigen", slug: "eigen" },
+          enabled_clients: ["codex"],
+          installation: {
+            client_version: "0.4.0",
+            capability_keys: [],
+            ...(requests === 1
+              ? {
+                  last_client_sequence: null,
+                  next_observation_sequence: 1,
+                  sequence_exhausted: false,
+                }
+              : requests === 2
+                ? {
+                    last_client_sequence: 9_007_199_254_740_991,
+                    next_observation_sequence: null,
+                    sequence_exhausted: true,
+                  }
+                : { sequence_exhausted: false }),
+          },
+        }),
+      );
+    });
+    const client = new HttpApiClient(url);
+
+    await expect(client.clientConfiguration("token")).resolves.toMatchObject({
+      installation: {
+        lastClientSequence: null,
+        nextObservationSequence: 1,
+        sequenceExhausted: false,
+      },
+    });
+    await expect(client.clientConfiguration("token")).resolves.toMatchObject({
+      installation: {
+        lastClientSequence: 9_007_199_254_740_991,
+        nextObservationSequence: null,
+        sequenceExhausted: true,
+      },
+    });
+    await expect(client.clientConfiguration("token")).rejects.toMatchObject({
+      code: "CLIENT_CONFIGURATION_INVALID",
     });
   });
 

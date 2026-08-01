@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
 import { basename, relative, resolve, sep } from "node:path";
 import type { AgentKind, DestinationConfig, HivemndConfig } from "../domain.js";
@@ -42,6 +42,7 @@ export function mergeWorkspaceDestinations(
         ),
     )
     .map((client): DestinationConfig => ({
+      id: randomUUID(),
       name: workspaceDestinationName(client, absolutePath),
       agent: client,
       scope: "workspace",
@@ -63,6 +64,7 @@ export function mergeRootDestinations(
         ),
     )
     .map((client): DestinationConfig => ({
+      id: randomUUID(),
       name: `${client}-global`,
       agent: client,
       scope: "root",
