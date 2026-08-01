@@ -133,6 +133,8 @@ describe("MCP command workflows", () => {
         cwd: temporary.path,
         environment: { HIVEMND_HOME: join(temporary.path, "state") },
         output,
+        clientVersion: "0.4.0",
+        clientFeatures: ["exact-delivery-targets-v1"],
         tokenStoreFactory: () => ({
           get: async () => ({
             value: "secret-token",

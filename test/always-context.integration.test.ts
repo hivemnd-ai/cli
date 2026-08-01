@@ -179,6 +179,181 @@ describe("central always-context cache", () => {
     await cache.restore(emptySnapshot);
   });
 
+  it("writes cache v2 with exact targets and emits only the matching hook scope", async () => {
+    const temp = await temporaryDirectory();
+    cleanups.push(temp.cleanup);
+    const cache = new AlwaysContextCache({
+      stateDirectory: join(temp.path, "state"),
+      apiUrl: "https://shared.hivemnd.cloud/eigen",
+    });
+    const base = contextManifest("global");
+    const global = {
+      ...base.artifacts[1]!,
+      targets: ["codex"] as const,
+      deliveryTargets: [
+        {
+          clientKind: "codex",
+          installScope: "user",
+          minimumClientVersion: "1.2.3",
+        },
+      ] as const,
+    };
+    const workspaceContent = bytes("workspace");
+    const workspace = {
+      ...global,
+      artifactVersionId: "context-version-2",
+      logicalId: "context-artifact-2",
+      relativePath: "context/workspace.md",
+      size: workspaceContent.byteLength,
+      sha256: hash(workspaceContent),
+      content: workspaceContent,
+      deliveryTargets: [
+        { clientKind: "codex", installScope: "workspace" },
+      ] as const,
+    };
+    const manifest = {
+      ...base,
+      alwaysContextByteLimit: 10_000,
+      artifacts: [global, workspace],
+    } as typeof base;
+
+    await cache.apply(await cache.plan(manifest));
+    const current = JSON.parse(
+      await readFile(join(cache.root, "current.json"), "utf8"),
+    ) as {
+      version: number;
+      alwaysContextByteLimit: number;
+      entries: Array<{ deliveryTargets: unknown[] }>;
+    };
+    expect(current).toMatchObject({
+      version: 2,
+      alwaysContextByteLimit: 10_000,
+      entries: [
+        {
+          deliveryTargets: [
+            {
+              clientKind: "codex",
+              installScope: "user",
+              minimumClientVersion: "1.2.3",
+            },
+          ],
+        },
+        {
+          deliveryTargets: [{ clientKind: "codex", installScope: "workspace" }],
+        },
+      ],
+    });
+    await expect(cache.read("codex", "user")).resolves.toBe("global");
+    await expect(cache.read("codex", "workspace")).resolves.toBe("workspace");
+
+    current.entries[0]!.deliveryTargets = [
+      {
+        clientKind: "codex",
+        installScope: "user",
+        minimumClientVersion: `1.2.3+${"a".repeat(128)}`,
+      },
+    ];
+    await writeFile(join(cache.root, "current.json"), JSON.stringify(current));
+    await expect(cache.read("codex", "user")).rejects.toMatchObject({
+      code: "INTEGRITY_FAILED",
+    });
+  });
+
+  it("reads a legacy cache as any scope and enforces exact rendered bytes without advancing the pointer", async () => {
+    const temp = await temporaryDirectory();
+    cleanups.push(temp.cleanup);
+    const stateDirectory = join(temp.path, "state");
+    const apiUrl = "https://shared.hivemnd.cloud/eigen";
+    const cache = new AlwaysContextCache({ stateDirectory, apiUrl });
+    const legacyBody = bytes("legacy");
+    const legacyVersion = "legacy-version";
+    const legacyFile = `${hash(legacyVersion)}.md`;
+    const newlineBody = bytes("newline\n");
+    const newlineVersion = "legacy-newline-version";
+    const newlineFile = `${hash(newlineVersion)}.md`;
+    await mkdir(join(cache.root, "versions"), { recursive: true });
+    await writeFile(join(cache.root, "versions", legacyFile), legacyBody);
+    await writeFile(join(cache.root, "versions", newlineFile), newlineBody);
+    await writeFile(
+      join(cache.root, "current.json"),
+      JSON.stringify({
+        version: 1,
+        organizationKey: profileKey(apiUrl),
+        apiUrl,
+        releaseId: "legacy-release",
+        entries: [
+          {
+            logicalId: "legacy-artifact",
+            artifactVersionId: legacyVersion,
+            relativePath: "context/legacy.md",
+            sha256: hash(legacyBody),
+            size: legacyBody.byteLength,
+            targets: ["codex"],
+            file: legacyFile,
+          },
+          {
+            logicalId: "legacy-newline-artifact",
+            artifactVersionId: newlineVersion,
+            relativePath: "context/legacy-newline.md",
+            sha256: hash(newlineBody),
+            size: newlineBody.byteLength,
+            targets: ["codex"],
+            file: newlineFile,
+          },
+        ],
+      }),
+    );
+    await expect(cache.read("codex", "user")).resolves.toBe(
+      "legacy\n\nnewline\n",
+    );
+    await expect(cache.read("codex", "workspace")).resolves.toBe(
+      "legacy\n\nnewline\n",
+    );
+
+    const base = contextManifest("12", ["codex"]);
+    const first = {
+      ...base.artifacts[1]!,
+      deliveryTargets: [{ clientKind: "codex", installScope: "user" }] as const,
+    };
+    const secondContent = bytes("34");
+    const second = {
+      ...first,
+      artifactVersionId: "context-version-2",
+      logicalId: "context-artifact-2",
+      relativePath: "context/second.md",
+      size: secondContent.byteLength,
+      sha256: hash(secondContent),
+      content: secondContent,
+    };
+    const exactBoundary = {
+      ...base,
+      alwaysContextByteLimit: 5,
+      artifacts: [first, second],
+    } as typeof base;
+    await cache.apply(await cache.plan(exactBoundary));
+    await expect(cache.read("codex", "user")).resolves.toBe("12\n34");
+    const pointer = await readFile(join(cache.root, "current.json"), "utf8");
+    const overflowContent = bytes("345");
+
+    await expect(
+      cache.plan({
+        ...exactBoundary,
+        artifacts: [
+          first,
+          {
+            ...second,
+            size: overflowContent.byteLength,
+            sha256: hash(overflowContent),
+            content: overflowContent,
+          },
+        ],
+      }),
+    ).rejects.toThrow("5-byte limit");
+    await expect(
+      readFile(join(cache.root, "current.json"), "utf8"),
+    ).resolves.toBe(pointer);
+  });
+
   it("rejects unsafe manifests, invalid UTF-8, hash drift, symlinks, malformed ownership and output overflow", async () => {
     const temp = await temporaryDirectory();
     cleanups.push(temp.cleanup);
@@ -188,6 +363,9 @@ describe("central always-context cache", () => {
     });
     const base = contextManifest();
     const embedded = base.artifacts[1]!;
+    await expect(
+      cache.plan({ ...base, alwaysContextByteLimit: -1 }),
+    ).rejects.toThrow("non-negative integer");
     await expect(
       cache.plan({
         ...base,

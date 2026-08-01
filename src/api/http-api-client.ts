@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   agentKinds,
   artifactKinds,
+  installScopes,
   sourceActionKeys,
   sourceActionStatuses,
   sourceAdapterKinds,
@@ -16,8 +17,12 @@ import {
   type SyncManifest,
   type SyncReceipt,
 } from "../domain.js";
+import {
+  clientRuntimeHeaders,
+  type ClientRuntimeMetadata,
+} from "../client/runtime-contract.js";
 import { HivemndError } from "../errors.js";
-import { parseSemver } from "../version/semver.js";
+import { isBoundedSemver, parseSemver } from "../version/semver.js";
 import {
   isWithinTenant,
   resolveTenantUrl,
@@ -33,6 +38,20 @@ export const apiPaths = {
   sources: "api/v1/sources",
 } as const;
 
+const deliveryTargetSchema = z
+  .object({
+    client_kind: z.enum(agentKinds),
+    install_scope: z.enum(installScopes),
+    minimum_client_version: z
+      .string()
+      .refine(isBoundedSemver, {
+        message:
+          "minimum_client_version must be valid SemVer within 128 UTF-8 bytes",
+      })
+      .nullable(),
+  })
+  .strict();
+
 const manifestSchema = z.object({
   schema_version: z.literal(1),
   minimum_client_version: z
@@ -47,18 +66,22 @@ const manifestSchema = z.object({
   generated_at: z.iso.datetime(),
   expires_at: z.iso.datetime(),
   policy_revision: z.string().min(1),
+  always_context_byte_limit: z.number().int().min(0).max(10_000).optional(),
   artifacts: z.array(
-    z.object({
-      artifact_version_id: z.string().min(1),
-      logical_id: z.string().min(1),
-      kind: z.enum(artifactKinds),
-      version: z.number().int().positive(),
-      relative_path: z.string().min(1),
-      size: z.number().int().nonnegative(),
-      sha256: z.string().regex(/^[a-f\d]{64}$/),
-      content_path: z.string().startsWith("/"),
-      targets: z.array(z.enum(agentKinds)).min(1),
-    }),
+    z
+      .object({
+        artifact_version_id: z.string().min(1),
+        logical_id: z.string().min(1),
+        kind: z.enum(artifactKinds),
+        version: z.number().int().positive(),
+        relative_path: z.string().min(1),
+        size: z.number().int().nonnegative(),
+        sha256: z.string().regex(/^[a-f\d]{64}$/),
+        content_path: z.string().startsWith("/"),
+        targets: z.array(z.enum(agentKinds)).min(1),
+        delivery_targets: z.array(deliveryTargetSchema).min(1).optional(),
+      })
+      .superRefine(validateWireTargets),
   ),
 });
 
@@ -73,6 +96,13 @@ const clientConfigurationSchema = z
       .object({ name: z.string().min(1), slug: z.string().min(1) })
       .strict(),
     enabled_clients: z.array(z.enum(agentKinds)),
+    installation: z
+      .object({
+        client_version: z.string().min(1),
+        capability_keys: z.array(z.string().min(1)),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -144,6 +174,7 @@ export class HttpApiClient implements ApiClient {
     baseUrl: string,
     private readonly fetcher: typeof fetch = fetch,
     private readonly now: () => Date = () => new Date(),
+    private readonly runtimeMetadata?: ClientRuntimeMetadata,
   ) {
     this.baseUrl = tenantBaseUrl(baseUrl);
   }
@@ -187,6 +218,7 @@ export class HttpApiClient implements ApiClient {
         generatedAt: new Date(wire.generated_at),
         expiresAt,
         policyRevision: wire.policy_revision,
+        alwaysContextByteLimit: wire.always_context_byte_limit ?? 10_000,
         artifacts: wire.artifacts.map((artifact): ManifestArtifact => ({
           artifactVersionId: artifact.artifact_version_id,
           logicalId: artifact.logical_id,
@@ -197,6 +229,18 @@ export class HttpApiClient implements ApiClient {
           sha256: artifact.sha256,
           contentPath: artifact.content_path,
           targets: artifact.targets,
+          deliveryTargets: artifact.delivery_targets
+            ? artifact.delivery_targets.map((target) => ({
+                clientKind: target.client_kind,
+                installScope: target.install_scope,
+                ...(target.minimum_client_version
+                  ? { minimumClientVersion: target.minimum_client_version }
+                  : {}),
+              }))
+            : artifact.targets.map((clientKind) => ({
+                clientKind,
+                installScope: "any" as const,
+              })),
         })),
       };
     } catch (error: unknown) {
@@ -325,6 +369,14 @@ export class HttpApiClient implements ApiClient {
       return {
         organization: value.organization,
         enabledClients: value.enabled_clients,
+        ...(value.installation
+          ? {
+              installation: {
+                clientVersion: value.installation.client_version,
+                capabilityKeys: value.installation.capability_keys,
+              },
+            }
+          : {}),
       };
     } catch (error: unknown) {
       throw new HivemndError(
@@ -349,7 +401,10 @@ export class HttpApiClient implements ApiClient {
       );
     }
     const headers: Record<string, string> = { accept: "application/json" };
-    if (token) headers.authorization = `Bearer ${token}`;
+    if (token) {
+      headers.authorization = `Bearer ${token}`;
+      Object.assign(headers, clientRuntimeHeaders(this.runtimeMetadata));
+    }
     if (body !== undefined) headers["content-type"] = "application/json";
     const response = await this.fetcher(url, {
       method,
@@ -369,5 +424,50 @@ export class HttpApiClient implements ApiClient {
       );
     }
     return response;
+  }
+}
+
+function validateWireTargets(
+  artifact: {
+    readonly targets: readonly (typeof agentKinds)[number][];
+    readonly delivery_targets?:
+      readonly z.infer<typeof deliveryTargetSchema>[] | undefined;
+  },
+  context: z.core.$RefinementCtx,
+): void {
+  const legacy = artifact.targets;
+  if (
+    new Set(legacy).size !== legacy.length ||
+    [...legacy].sort().join("\0") !== legacy.join("\0")
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "legacy targets must be unique and sorted",
+      path: ["targets"],
+    });
+  }
+  const exact = artifact.delivery_targets;
+  if (!exact) return;
+  const exactKeys = exact.map(
+    (target) =>
+      `${target.client_kind}\0${target.install_scope}\0${target.minimum_client_version ?? ""}`,
+  );
+  if (
+    new Set(exactKeys).size !== exactKeys.length ||
+    [...exactKeys].sort().join("\0") !== exactKeys.join("\0")
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "delivery_targets must be unique and sorted",
+      path: ["delivery_targets"],
+    });
+  }
+  const exactKinds = [...new Set(exact.map((target) => target.client_kind))];
+  if (legacy.join("\0") !== exactKinds.join("\0")) {
+    context.addIssue({
+      code: "custom",
+      message: "legacy and exact target client kinds must agree",
+      path: ["delivery_targets"],
+    });
   }
 }

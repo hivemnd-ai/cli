@@ -16,6 +16,16 @@ export type ArtifactKind = (typeof artifactKinds)[number];
 export const destinationScopes = ["root", "workspace", "directory"] as const;
 export type DestinationScope = (typeof destinationScopes)[number];
 
+export const installScopes = ["user", "workspace"] as const;
+export type InstallScope = (typeof installScopes)[number];
+export type DeliveryTargetScope = InstallScope | "any";
+
+export interface ManifestDeliveryTarget {
+  readonly clientKind: AgentKind;
+  readonly installScope: DeliveryTargetScope;
+  readonly minimumClientVersion?: string | undefined;
+}
+
 export interface DestinationConfig {
   readonly name: string;
   readonly agent: AgentKind;
@@ -31,6 +41,12 @@ export interface HivemndConfig {
 export interface ClientConfiguration {
   readonly organization: { readonly name: string; readonly slug: string };
   readonly enabledClients: readonly AgentKind[];
+  readonly installation?:
+    | {
+        readonly clientVersion: string;
+        readonly capabilityKeys: readonly string[];
+      }
+    | undefined;
 }
 
 export interface PromptPort {
@@ -50,6 +66,7 @@ export interface ManifestArtifact {
   readonly sha256: string;
   readonly contentPath: string;
   readonly targets: readonly AgentKind[];
+  readonly deliveryTargets: readonly ManifestDeliveryTarget[];
 }
 
 export interface Artifact extends ManifestArtifact {
@@ -59,6 +76,7 @@ export interface Artifact extends ManifestArtifact {
 export interface SyncManifest {
   readonly schemaVersion: 1;
   readonly minimumClientVersion: string;
+  readonly alwaysContextByteLimit: number;
   readonly release: { readonly id: string; readonly sequence: number };
   readonly generatedAt: Date;
   readonly expiresAt: Date;
@@ -234,6 +252,7 @@ export interface ApiClient {
 export interface AgentAdapter {
   readonly name: string;
   readonly kind: AgentKind;
+  readonly scope: DestinationScope;
   readonly root: string;
   readonly instructionPath?: string | undefined;
   destination(relativePath: string): string;

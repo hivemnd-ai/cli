@@ -42,6 +42,7 @@ export function createFilesystemAdapters(
       stateDirectory,
       instructionPath(destination, homeDirectory),
       instructionBoundary(destination, homeDirectory),
+      destination.scope,
     );
   });
 }

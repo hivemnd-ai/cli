@@ -8,12 +8,16 @@ import type {
 } from "../domain.js";
 import { HivemndError } from "../errors.js";
 import { sha256 } from "./hash.js";
+import { isArtifactDesired } from "./delivery-targets.js";
 
 export class SyncPlanner {
   async plan(
     manifest: PreparedManifest,
     adapters: readonly AgentAdapter[],
-    options: { readonly adoptExisting: boolean } = { adoptExisting: false },
+    options: {
+      readonly adoptExisting: boolean;
+      readonly clientVersion?: string;
+    } = { adoptExisting: false },
   ): Promise<readonly SyncChange[]> {
     validateManifestUniqueness(manifest.artifacts);
     const changes: SyncChange[] = [];
@@ -26,8 +30,9 @@ export class SyncPlanner {
         ]),
       );
       const desired = manifest.artifacts.filter((artifact) =>
-        artifact.targets.includes(adapter.kind),
+        isArtifactDesired(artifact, adapter, options.clientVersion),
       );
+      validateDestinationAssignments(desired, adapter.name);
       for (const artifact of desired) {
         const current = await adapter.read(artifact.relativePath);
         const owned = ownership.get(artifact.relativePath);
@@ -82,7 +87,6 @@ export class SyncPlanner {
 function validateManifestUniqueness(artifacts: readonly Artifact[]): void {
   const versionIds = new Set<string>();
   const logicalIds = new Set<string>();
-  const assignments = new Set<string>();
   for (const artifact of artifacts) {
     if (versionIds.has(artifact.artifactVersionId)) {
       throw new HivemndError(
@@ -98,16 +102,22 @@ function validateManifestUniqueness(artifacts: readonly Artifact[]): void {
     }
     versionIds.add(artifact.artifactVersionId);
     logicalIds.add(artifact.logicalId);
-    for (const agent of artifact.targets) {
-      const assignment = `${agent}:${artifact.relativePath}`;
-      if (assignments.has(assignment)) {
-        throw new HivemndError(
-          "MANIFEST_INVALID",
-          `Duplicate artifact assignment in manifest: ${assignment}`,
-        );
-      }
-      assignments.add(assignment);
+  }
+}
+
+function validateDestinationAssignments(
+  artifacts: readonly Artifact[],
+  destinationName: string,
+): void {
+  const paths = new Set<string>();
+  for (const artifact of artifacts) {
+    if (paths.has(artifact.relativePath)) {
+      throw new HivemndError(
+        "MANIFEST_INVALID",
+        `Duplicate artifact assignment in manifest: ${destinationName}:${artifact.relativePath}`,
+      );
     }
+    paths.add(artifact.relativePath);
   }
 }
 

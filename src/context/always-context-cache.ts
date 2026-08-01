@@ -11,11 +11,18 @@ import {
 } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
-import type { AgentKind, Artifact, PreparedManifest } from "../domain.js";
+import type {
+  AgentKind,
+  Artifact,
+  InstallScope,
+  ManifestArtifact,
+  PreparedManifest,
+} from "../domain.js";
 import { assertDefined, HivemndError } from "../errors.js";
 import { profileKey } from "../organizations/registry.js";
 import { tenantBaseUrl } from "../tenant-url.js";
 import { sha256 } from "../sync/hash.js";
+import { isBoundedSemver } from "../version/semver.js";
 
 export const MAX_ALWAYS_CONTEXT_BYTES = 10_000;
 
@@ -33,7 +40,7 @@ const cacheEntrySchema = z.object({
   file: z.string().regex(cachedFilePattern),
 });
 
-const cacheManifestSchema = z.object({
+const legacyCacheManifestSchema = z.object({
   version: z.literal(1),
   organizationKey: z.string().regex(/^[a-f\d]{16}$/),
   apiUrl: z.url(),
@@ -41,7 +48,48 @@ const cacheManifestSchema = z.object({
   entries: z.array(cacheEntrySchema),
 });
 
-type CacheManifest = z.infer<typeof cacheManifestSchema>;
+const boundedSemverSchema = z.string().refine(isBoundedSemver);
+
+// `any` is written only while consuming a legacy manifest that has no exact
+// targets. Cache v1 is also read broadly for both scopes. New exact targets are
+// persisted as user/workspace and may carry a bounded client minimum.
+const cachedDeliveryTargetSchema = z.discriminatedUnion("installScope", [
+  z
+    .object({
+      clientKind: z.enum(["codex", "claude"]),
+      installScope: z.literal("any"),
+    })
+    .strict(),
+  z
+    .object({
+      clientKind: z.enum(["codex", "claude"]),
+      installScope: z.enum(["user", "workspace"]),
+      minimumClientVersion: boundedSemverSchema.optional(),
+    })
+    .strict(),
+]);
+
+const typedCacheEntrySchema = cacheEntrySchema.omit({ targets: true }).extend({
+  deliveryTargets: z.array(cachedDeliveryTargetSchema).min(1),
+});
+
+const typedCacheManifestSchema = z.object({
+  version: z.literal(2),
+  organizationKey: z.string().regex(/^[a-f\d]{16}$/),
+  apiUrl: z.url(),
+  releaseId: z.string().min(1),
+  alwaysContextByteLimit: z.number().int().min(0).max(MAX_ALWAYS_CONTEXT_BYTES),
+  entries: z.array(typedCacheEntrySchema),
+});
+
+const readableCacheManifestSchema = z.discriminatedUnion("version", [
+  legacyCacheManifestSchema,
+  typedCacheManifestSchema,
+]);
+
+type LegacyCacheManifest = z.infer<typeof legacyCacheManifestSchema>;
+type CacheManifest = z.infer<typeof typedCacheManifestSchema>;
+type ReadableCacheManifest = z.infer<typeof readableCacheManifestSchema>;
 
 export interface AlwaysContextCacheChange {
   readonly kind: "update" | "remove" | "unchanged";
@@ -84,7 +132,7 @@ export class AlwaysContextCache {
       );
     validateUniqueContext(desired);
     const contents = new Map<string, Uint8Array>();
-    const entries = desired.map((artifact) => {
+    const entries: CacheManifest["entries"] = desired.map((artifact) => {
       validateArtifact(artifact);
       const file = versionFile(artifact.artifactVersionId);
       const existing = contents.get(file);
@@ -101,11 +149,18 @@ export class AlwaysContextCache {
         relativePath: artifact.relativePath,
         sha256: artifact.sha256,
         size: artifact.size,
-        targets: [...artifact.targets],
+        deliveryTargets: artifact.deliveryTargets.map((target) => ({
+          clientKind: target.clientKind,
+          installScope: target.installScope,
+          ...(target.minimumClientVersion
+            ? { minimumClientVersion: target.minimumClientVersion }
+            : {}),
+        })),
         file,
       };
     });
-    assertOutputLimits(entries, contents);
+    const limit = effectiveLimit(manifest.alwaysContextByteLimit);
+    assertOutputLimits(entries, contents, limit);
     const current = await this.readCurrentOptional();
     if (entries.length === 0) {
       return {
@@ -113,11 +168,12 @@ export class AlwaysContextCache {
         contents,
       };
     }
-    const next = cacheManifestSchema.parse({
-      version: 1,
+    const next = typedCacheManifestSchema.parse({
+      version: 2,
       organizationKey: this.organizationKey,
       apiUrl: this.apiUrl,
       releaseId: manifest.release.id,
+      alwaysContextByteLimit: limit,
       entries,
     });
     if (current && JSON.stringify(current) === JSON.stringify(next)) {
@@ -200,25 +256,32 @@ export class AlwaysContextCache {
     }
   }
 
-  async read(client: AgentKind): Promise<string> {
+  async read(client: AgentKind, scope: InstallScope = "user"): Promise<string> {
     const manifest = await this.readCurrentOptional();
     if (!manifest) return "";
-    const bodies = await this.readManifestContent(manifest, client);
-    const output = bodies.join("\n");
-    if (Buffer.byteLength(output) > MAX_ALWAYS_CONTEXT_BYTES) {
+    const bodies = await this.readManifestContent(manifest, client, scope);
+    const output =
+      manifest.version === 1 ? renderLegacyBodies(bodies) : bodies.join("\n");
+    const limit =
+      manifest.version === 1
+        ? MAX_ALWAYS_CONTEXT_BYTES
+        : manifest.alwaysContextByteLimit;
+    if (Buffer.byteLength(output) > limit) {
       throw new HivemndError(
         "INTEGRITY_FAILED",
-        `Always-context output exceeds the ${MAX_ALWAYS_CONTEXT_BYTES}-byte limit`,
+        `Always-context output exceeds the ${limit}-byte limit`,
       );
     }
     return output;
   }
 
-  private async readCurrentOptional(): Promise<CacheManifest | undefined> {
+  private async readCurrentOptional(): Promise<
+    ReadableCacheManifest | undefined
+  > {
     const content = await readOptional(this.currentPath());
     if (!content) return undefined;
     try {
-      const parsed = cacheManifestSchema.parse(
+      const parsed = readableCacheManifestSchema.parse(
         JSON.parse(decoder.decode(content)) as unknown,
       );
       if (
@@ -238,11 +301,14 @@ export class AlwaysContextCache {
   }
 
   private async readManifestContent(
-    manifest: CacheManifest,
+    manifest: ReadableCacheManifest,
     client?: AgentKind,
+    scope: InstallScope = "user",
   ): Promise<string[]> {
     const entries = client
-      ? manifest.entries.filter((entry) => entry.targets.includes(client))
+      ? manifest.entries.filter((entry) =>
+          cacheEntryMatches(manifest, entry, client, scope),
+        )
       : manifest.entries;
     const bodies: string[] = [];
     for (const entry of entries) {
@@ -270,8 +336,7 @@ export class AlwaysContextCache {
         );
       }
       try {
-        const markdown = decoder.decode(content);
-        bodies.push(markdown.endsWith("\n") ? markdown : `${markdown}\n`);
+        bodies.push(decoder.decode(content));
       } catch (error: unknown) {
         throw new HivemndError(
           "INTEGRITY_FAILED",
@@ -323,7 +388,9 @@ export class AlwaysContextCache {
   }
 }
 
-export function isAlwaysContextArtifact(artifact: Artifact): boolean {
+export function isAlwaysContextArtifact(
+  artifact: Pick<ManifestArtifact, "kind" | "relativePath">,
+): boolean {
   return (
     artifact.kind === "embedded_document" &&
     alwaysContextPath.test(artifact.relativePath)
@@ -372,22 +439,64 @@ function validateUniqueContext(artifacts: readonly Artifact[]): void {
 function assertOutputLimits(
   entries: CacheManifest["entries"],
   contents: ReadonlyMap<string, Uint8Array>,
+  limit: number,
 ): void {
   for (const client of ["codex", "claude"] as const) {
-    const size = entries
-      .filter((entry) => entry.targets.includes(client))
-      .reduce((total, entry, index) => {
+    for (const scope of ["user", "workspace"] as const) {
+      const selected = entries.filter((entry) =>
+        entry.deliveryTargets.some(
+          (target) =>
+            target.clientKind === client &&
+            (target.installScope === "any" || target.installScope === scope),
+        ),
+      );
+      const size = selected.reduce((total, entry, index) => {
         const content = contents.get(entry.file);
         assertDefined(content, "Always-context bytes disappeared");
         return total + content.byteLength + (index === 0 ? 0 : 1);
       }, 0);
-    if (size > MAX_ALWAYS_CONTEXT_BYTES) {
-      throw new HivemndError(
-        "MANIFEST_INVALID",
-        `Always-context output for ${client} exceeds the ${MAX_ALWAYS_CONTEXT_BYTES}-byte limit`,
-      );
+      if (size > limit) {
+        throw new HivemndError(
+          "MANIFEST_INVALID",
+          `Always-context output for ${client}/${scope} exceeds the ${limit}-byte limit`,
+        );
+      }
     }
   }
+}
+
+function effectiveLimit(value: number): number {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new HivemndError(
+      "MANIFEST_INVALID",
+      "Always-context limit must be a non-negative integer",
+    );
+  }
+  return Math.min(value, MAX_ALWAYS_CONTEXT_BYTES);
+}
+
+function cacheEntryMatches(
+  manifest: ReadableCacheManifest,
+  entry: ReadableCacheManifest["entries"][number],
+  client: AgentKind,
+  scope: InstallScope,
+): boolean {
+  if (manifest.version === 1) {
+    return (entry as LegacyCacheManifest["entries"][number]).targets.includes(
+      client,
+    );
+  }
+  return (entry as CacheManifest["entries"][number]).deliveryTargets.some(
+    (target) =>
+      target.clientKind === client &&
+      (target.installScope === "any" || target.installScope === scope),
+  );
+}
+
+function renderLegacyBodies(bodies: readonly string[]): string {
+  return bodies
+    .map((body) => (body.endsWith("\n") ? body : `${body}\n`))
+    .join("\n");
 }
 
 function versionFile(artifactVersionId: string): string {

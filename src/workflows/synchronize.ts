@@ -11,6 +11,8 @@ import { UPDATE_COMMAND } from "../update/daily-update-checker.js";
 import { resolve } from "node:path";
 import { join } from "node:path";
 import { selectContextualDestinationNames } from "../workspaces/destinations.js";
+import { assertCompatibleDeliveryTargets } from "../sync/delivery-targets.js";
+import { isAlwaysContextArtifact } from "../context/always-context-cache.js";
 
 export interface SynchronizationOptions {
   readonly dryRun: boolean;
@@ -54,11 +56,6 @@ export async function synchronize(
     dependencies.clientVersion,
     manifest.minimumClientVersion,
   );
-  const prepared = await new SyncPreparer().prepare(
-    manifest,
-    token.value,
-    client,
-  );
   const destinationNames =
     options.destination.length > 0
       ? options.destination
@@ -74,9 +71,30 @@ export async function synchronize(
       "No synchronization destinations are configured",
     );
   }
+  assertCompatibleDeliveryTargets(
+    manifest.artifacts.filter((artifact) => !isAlwaysContextArtifact(artifact)),
+    adapters,
+    dependencies.clientVersion,
+  );
+  assertCompatibleDeliveryTargets(
+    manifest.artifacts.filter(isAlwaysContextArtifact),
+    config.destinations
+      .filter((destination) => destination.scope !== "directory")
+      .map((destination) => ({
+        kind: destination.agent,
+        scope: destination.scope,
+      })),
+    dependencies.clientVersion,
+  );
+  const prepared = await new SyncPreparer().prepare(
+    manifest,
+    token.value,
+    client,
+  );
   const destinationManifest = withoutAlwaysContext(prepared);
   const changes = await new SyncPlanner().plan(destinationManifest, adapters, {
     adoptExisting: options.adoptExisting,
+    clientVersion: dependencies.clientVersion,
   });
   const contextChanges = await new AlwaysContextPlanner().plan(adapters);
   const cache = new AlwaysContextCache({
