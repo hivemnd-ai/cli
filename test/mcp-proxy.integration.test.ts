@@ -3,6 +3,123 @@ import { describe, expect, it, vi } from "vitest";
 import { McpHttpProxy, runStdioProxy } from "../src/mcp/proxy.js";
 
 describe("MCP stdio proxy", () => {
+  it("forwards expanded documentation instructions, catalog schemas, and mutation outcomes without client policy", async () => {
+    const responses = [
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          protocolVersion: "2025-03-26",
+          capabilities: { tools: { listChanged: false } },
+          serverInfo: { name: "hivemnd", version: "1" },
+          instructions:
+            "Reviewed artifacts create proposals; agent-owned artifacts publish directly.",
+        },
+      },
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        result: {
+          tools: [
+            "create_artifact_folder",
+            "create_artifact_document",
+            "promote_artifact_proposal",
+            "direct_update_agent_owned_artifact",
+            "create_artifact_source_reference",
+            "rebaseline_artifact_source_reference",
+            "create_source_check",
+          ].map((name) => ({
+            name,
+            description: `Server-owned contract for ${name}`,
+            inputSchema: {
+              type: "object",
+              properties: { request_id: { type: "string", format: "uuid" } },
+              additionalProperties: false,
+            },
+          })),
+        },
+      },
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                status: "review_needed",
+                proposal_id: "proposal-1",
+                comment_thread_ids: ["thread-1"],
+              }),
+            },
+          ],
+          structuredContent: {
+            status: "review_needed",
+            proposal_id: "proposal-1",
+            comment_thread_ids: ["thread-1"],
+          },
+        },
+      },
+    ] as const;
+    const requests: unknown[] = [];
+    const proxy = new McpHttpProxy({
+      apiUrl: "https://shared.hivemnd.cloud/eigen",
+      token: "secret-token",
+      fetcher: async (_input, init) => {
+        if (typeof init?.body !== "string") {
+          throw new Error("Expected the proxy to send a JSON string body");
+        }
+        requests.push(JSON.parse(init.body) as unknown);
+        return new Response(JSON.stringify(responses[requests.length - 1]), {
+          status: 200,
+        });
+      },
+    });
+
+    const initialize = await proxy.forward({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-03-26", capabilities: {} },
+    });
+    const catalog = await proxy.forward({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/list",
+    });
+    const outcome = await proxy.forward({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: {
+        name: "create_artifact_document",
+        arguments: { request_id: "6b70444f-9780-45db-a316-a27bd1c98877" },
+      },
+    });
+
+    expect(initialize).toEqual(responses[0]);
+    expect(catalog).toEqual(responses[1]);
+    expect(outcome).toEqual(responses[2]);
+    expect(requests).toEqual([
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-03-26", capabilities: {} },
+      },
+      { jsonrpc: "2.0", id: 2, method: "tools/list" },
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: {
+          name: "create_artifact_document",
+          arguments: { request_id: "6b70444f-9780-45db-a316-a27bd1c98877" },
+        },
+      },
+    ]);
+  });
+
   it("forwards JSON-RPC with a bearer token without writing diagnostics to stdout", async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     const fetcher: typeof fetch = async (input, init) => {
