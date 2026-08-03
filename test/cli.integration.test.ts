@@ -963,11 +963,24 @@ describe("cached CLI update notice hook command", () => {
     await utimes(stalePath, new Date("2020-01-01"), new Date("2020-01-01"));
     const args = noticeArguments(stateDirectory, "codex");
 
-    for (let index = 0; index < 260; index += 1) {
-      await expect(
-        submit(runtime, args, promptInput(temp.path, `bounded-${index}`)),
-      ).resolves.toBe(0);
-    }
+    await Promise.all(
+      Array.from({ length: 260 }, async (_value, index) => {
+        const digest = createHash("sha256")
+          .update(`seeded-${index}`)
+          .digest("hex");
+        await writeFile(
+          join(noticesDirectory, `${digest}.json`),
+          `${JSON.stringify({
+            latestVersion: "1.3.0",
+            announcedAt: checkedAt,
+          })}\n`,
+          { mode: 0o600 },
+        );
+      }),
+    );
+    await expect(
+      submit(runtime, args, promptInput(temp.path, "bounded-new-claim")),
+    ).resolves.toBe(0);
     const entries = await readdir(noticesDirectory);
     expect(entries).toHaveLength(256);
     expect(entries).not.toContain(`${"a".repeat(64)}.json`);
@@ -2120,7 +2133,7 @@ describe("command shell", () => {
     expect(defaultDependencies.clientPlatform).toBe(
       `${process.platform}-${process.arch}`,
     );
-    expect(defaultDependencies.clientVersion).toBe("0.5.3");
+    expect(defaultDependencies.clientVersion).toBe("0.5.4");
     expect(
       defaultDependencies.scheduleManagerFactory({
         apiUrl: "https://shared.hivemnd.cloud/eigen",

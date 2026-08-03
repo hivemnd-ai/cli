@@ -21,7 +21,7 @@ import type { RuntimeDependencies } from "./dependencies.js";
 import { clientTechnicalFeatures } from "../client/runtime-contract.js";
 
 const stateDirectory = process.env.HIVEMND_HOME ?? join(homedir(), ".hivemnd");
-const clientVersion = "0.5.3";
+const clientVersion = "0.5.4";
 
 export function createDefaultApiClient(config: HivemndConfig): HttpApiClient {
   return new HttpApiClient(config.apiUrl, fetch, undefined, {
