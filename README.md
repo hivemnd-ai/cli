@@ -36,8 +36,9 @@ it. Hivemnd previews the organization, every enabled AI tool, selected scopes,
 canonical workspace folders and automatic synchronization before changing
 anything. It then authenticates, commits the tenant profile and routing under an
 exclusive local lock, performs the first fail-safe sync when destinations exist,
-registers the Hivemnd MCP proxy and verified `SessionStart` context hook for the
-selected scopes, and optionally installs automatic sync. A later activation URL
+registers the Hivemnd MCP proxy plus its paired `SessionStart` context and
+`UserPromptSubmit` CLI-update hooks for the selected scopes, and optionally
+installs automatic sync. A later activation URL
 can add another organization. Headless
 use requires explicit flags and `--apply`; provide the activation URL through
 `HIVEMND_ACTIVATION_URL` instead of process arguments when possible.
@@ -134,9 +135,14 @@ of synchronizing every destination. Existing scheduled commands that explicitly
 pass `--config` remain compatible.
 
 Running the command again fetches the latest authorized release, compares it
-with the local ownership ledgers, and applies only required changes. There is no
-persistent MCP process. To run the same synchronization
-periodically for the current config, install the native user-level scheduler:
+with the local ownership ledgers, and applies only required changes. Files in
+paths already owned by Hivemnd are governed local copies: Hivemnd Cloud is
+authoritative, so synchronization recreates missing files, replaces local edits
+with the authorized version, and removes governed files that are no longer in
+the manifest. Shared content must be edited through the Hivemnd platform or MCP,
+not in the synchronized copy. There is no persistent MCP process. To run the
+same synchronization periodically for the current config, install the native
+user-level scheduler:
 
 ```sh
 hivemnd schedule install
@@ -256,6 +262,11 @@ Codex loads the cache from an owned `SessionStart` entry in
 Claude supplies an `agent_id`. Both hooks match `startup`, `resume`, `clear` and
 `compact` so context survives resumed and compacted primary sessions.
 
+The same atomic host registration owns a `UserPromptSubmit` entry that can show
+a cached CLI update as a top-level `systemMessage`. It emits no status message,
+plain output or additional model context. Root sessions see each available
+version once; subagents remain silent.
+
 Every managed hook declares whether it is global or belongs to one canonical
 workspace. If hosts execute global, workspace and nested-workspace hooks for the
 same session, only the hook for the most specific effective workspace binding
@@ -303,8 +314,10 @@ backend responsibility, not a CLI feature.
 - Remote content paths must remain on the configured Hivemnd origin.
 - Destination paths must remain inside their configured root and cannot traverse
   symlinks or the reserved `.hivemnd` namespace.
-- Existing unmanaged files and locally modified managed files become conflicts;
-  they are never overwritten or claimed silently.
+- Existing unmanaged files remain conflicts and are never overwritten or
+  claimed silently. Once Hivemnd owns a path, Hivemnd Cloud is authoritative:
+  the next sync converges that path to the authorized manifest, including
+  recreating, replacing, reassigning or removing it as required.
 - Writes use private temporary files and atomic rename. A failed multi-
   destination apply restores files, every affected ownership ledger and the
   active always-context pointer.
@@ -340,7 +353,12 @@ At most once per day, ordinary successful commands query the public npm
 metadata endpoint for the latest stable `@hivemnd-ai/cli` version. The check is
 advisory, times out quickly, and never makes the requested command fail. Its
 private cache is `$HIVEMND_HOME/update-check.json`. When an update exists, the
-CLI prints the notice after the command's normal output.
+CLI prints the notice after the command's normal output. Managed Codex and
+Claude Code integrations also inspect that fresh cache locally on prompt
+submission and show the same advisory outside model context. The prompt path
+never performs a network request and stores no prompt or transcript. Dedupe
+claims are SHA-256-named private files under
+`$HIVEMND_HOME/update-notices`, expire after 30 days and are capped at 256.
 
 Check explicitly at any time:
 
@@ -395,11 +413,10 @@ environment. The workflow uses GitHub OIDC and grants only `contents: read` and
 credential. After trusted publishing is active, configure npm to require 2FA
 and disallow traditional publish tokens.
 
-Because npm requires a package to exist before its trusted publisher can be
-configured, the first release may use a one-time granular npm token stored only
-as the encrypted GitHub Actions secret `NPM_TOKEN`. Delete that secret
-immediately after the first successful publish, configure the trusted publisher,
-and use OIDC for every later release. Never commit a token or write one into a
+The release workflow has no token fallback and never reads `NPM_TOKEN`.
+Bootstrap credentials, if any remain configured in repository settings, are
+outside the normal release path and should be removed through a separately
+authorized administration change. Never commit a token or write one into a
 workflow file.
 
 To release, update `package.json`, `package-lock.json`, and

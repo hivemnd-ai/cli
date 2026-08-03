@@ -33,6 +33,7 @@ export interface HookLauncherDefinition {
   readonly scope: "global" | "workspace";
   readonly workspace?: string;
   readonly command: string;
+  readonly updateNoticeCommand: string;
   readonly stateDirectory: string;
 }
 
@@ -59,7 +60,7 @@ export function managedHookStateDirectory(
   return environment.HIVEMND_HOME ?? join(homeDirectory, ".hivemnd");
 }
 
-export class SessionStartHookRegistration {
+export class HostHookRegistration {
   constructor(
     readonly path: string,
     private readonly client: AgentKind,
@@ -71,24 +72,29 @@ export class SessionStartHookRegistration {
     validateDefinition(definition, this.client);
     const current = await readConfig(this.path);
     const document = parseConfig(current.content);
-    const groups = sessionStartGroups(document);
-    const managed = groups
-      .map((group, index) => ({ group, index }))
-      .filter(({ group }) => isManagedGroup(group, this.client));
-    if (managed.length > 1) {
-      throw conflict("Host has multiple Hivemnd-owned SessionStart hooks");
-    }
-    const [managedEntry] = managed;
-    const expected = hookGroup(definition);
-    if (managedEntry && sameValue(managedEntry.group, expected)) {
+    const session = managedEvent(document, "SessionStart", this.client);
+    const prompt = managedEvent(document, "UserPromptSubmit", this.client);
+    const expectedSession = sessionStartHookGroup(definition);
+    const expectedPrompt = updateNoticeHookGroup(definition);
+    if (
+      session.entry &&
+      prompt.entry &&
+      sameValue(session.entry.group, expectedSession) &&
+      sameValue(prompt.entry.group, expectedPrompt)
+    ) {
       return { changed: false, state: "installed" };
     }
-    const nextGroups = managedEntry
-      ? groups.map((group, index) =>
-          index === managedEntry.index ? expected : group,
-        )
-      : [...groups, expected];
-    const next = editSessionStart(current.content, nextGroups);
+    const nextSession = replaceManaged(
+      session.groups,
+      session.entry,
+      expectedSession,
+    );
+    const nextPrompt = replaceManaged(
+      prompt.groups,
+      prompt.entry,
+      expectedPrompt,
+    );
+    const next = editHookEvents(current.content, nextSession, nextPrompt);
     await atomicWrite(this.path, next, current.mode);
     return { changed: true, state: "installed" };
   }
@@ -97,21 +103,23 @@ export class SessionStartHookRegistration {
     validateDefinition(expected, this.client);
     const current = await readConfig(this.path);
     const document = parseConfig(current.content);
-    const groups = sessionStartGroups(document);
-    const managed = groups
-      .map((group, index) => ({ group, index }))
-      .filter(({ group }) => isManagedGroup(group, this.client));
-    const [managedEntry] = managed;
-    if (!managedEntry) return { changed: false, state: "missing" };
-    if (
-      managed.length > 1 ||
-      !sameValue(managedEntry.group, hookGroup(expected))
-    ) {
-      throw conflict("Hivemnd's SessionStart hook was modified");
+    const session = managedEvent(document, "SessionStart", this.client);
+    const prompt = managedEvent(document, "UserPromptSubmit", this.client);
+    if (!session.entry && !prompt.entry) {
+      return { changed: false, state: "missing" };
     }
-    const next = editSessionStart(
+    if (
+      !session.entry ||
+      !prompt.entry ||
+      !sameValue(session.entry.group, sessionStartHookGroup(expected)) ||
+      !sameValue(prompt.entry.group, updateNoticeHookGroup(expected))
+    ) {
+      throw conflict("Hivemnd's managed hooks were modified");
+    }
+    const next = editHookEvents(
       current.content,
-      groups.filter((_group, index) => index !== managedEntry.index),
+      withoutManaged(session.groups, session.entry.index),
+      withoutManaged(prompt.groups, prompt.entry.index),
     );
     await atomicWrite(this.path, next, current.mode);
     return { changed: true, state: "missing" };
@@ -120,11 +128,13 @@ export class SessionStartHookRegistration {
   async status(expected: HookLauncherDefinition): Promise<RegistrationState> {
     try {
       const document = parseConfig((await readConfig(this.path)).content);
-      const managed = sessionStartGroups(document).filter((group) =>
-        isManagedGroup(group, this.client),
-      );
-      if (managed.length === 0) return "missing";
-      return managed.length === 1 && sameValue(managed[0], hookGroup(expected))
+      const session = managedEvent(document, "SessionStart", this.client);
+      const prompt = managedEvent(document, "UserPromptSubmit", this.client);
+      if (!session.entry && !prompt.entry) return "missing";
+      return session.entry &&
+        prompt.entry &&
+        sameValue(session.entry.group, sessionStartHookGroup(expected)) &&
+        sameValue(prompt.entry.group, updateNoticeHookGroup(expected))
         ? "installed"
         : "conflict";
     } catch {
@@ -180,24 +190,29 @@ export function hookLauncherDefinition(
       shellQuote(requiredWorkspace(options.workspace)),
     );
   }
+  const launcher = [
+    shellQuote(options.runtimeExecutablePath),
+    shellQuote(options.cliScriptPath),
+    "context",
+  ];
+  const invocation = [
+    "--client",
+    options.client,
+    "--state-directory",
+    shellQuote(options.stateDirectory),
+    ...scopeArguments,
+    MANAGED_ARGUMENT,
+    MANAGED_VERSION,
+  ];
   return {
     client: options.client,
     scope: options.scope,
     ...(options.workspace ? { workspace: options.workspace } : {}),
     stateDirectory: options.stateDirectory,
-    command: [
-      shellQuote(options.runtimeExecutablePath),
-      shellQuote(options.cliScriptPath),
-      "context",
-      "inject",
-      "--client",
-      options.client,
-      "--state-directory",
-      shellQuote(options.stateDirectory),
-      ...scopeArguments,
-      MANAGED_ARGUMENT,
-      MANAGED_VERSION,
-    ].join(" "),
+    command: [...launcher, "inject", ...invocation].join(" "),
+    updateNoticeCommand: [...launcher, "update-notice", ...invocation].join(
+      " ",
+    ),
   };
 }
 
@@ -211,7 +226,7 @@ function requiredWorkspace(value: string | undefined): string {
 
 export function hostHookRegistration(
   target: HookRegistrationTarget,
-): SessionStartHookRegistration {
+): HostHookRegistration {
   if (target.scope === "workspace" && !target.workspace) {
     throw new HivemndError(
       "MCP_REGISTRATION_INVALID",
@@ -226,11 +241,11 @@ export function hostHookRegistration(
       : target.scope === "global"
         ? join(target.homeDirectory, ".claude", "settings.json")
         : join(String(target.workspace), ".claude", "settings.local.json");
-  return new SessionStartHookRegistration(path, target.client);
+  return new HostHookRegistration(path, target.client);
 }
 
 export function hookInstallOperation(
-  registration: SessionStartHookRegistration,
+  registration: HostHookRegistration,
   definition: HookLauncherDefinition,
 ): CustomRegistrationInstallOperation {
   return {
@@ -240,7 +255,16 @@ export function hookInstallOperation(
   };
 }
 
-function hookGroup(
+export { HostHookRegistration as SessionStartHookRegistration };
+
+type HookEvent = "SessionStart" | "UserPromptSubmit";
+
+interface ManagedEvent {
+  readonly groups: readonly unknown[];
+  readonly entry?: { readonly group: unknown; readonly index: number };
+}
+
+function sessionStartHookGroup(
   definition: HookLauncherDefinition,
 ): Record<string, unknown> {
   return {
@@ -259,15 +283,36 @@ function hookGroup(
   };
 }
 
-function isManagedGroup(value: unknown, client: AgentKind): boolean {
+function updateNoticeHookGroup(
+  definition: HookLauncherDefinition,
+): Record<string, unknown> {
+  return {
+    matcher: "",
+    hooks: [
+      {
+        type: "command",
+        command: definition.updateNoticeCommand,
+        timeout: 5,
+      },
+    ],
+  };
+}
+
+function isManagedGroup(
+  value: unknown,
+  event: HookEvent,
+  client: AgentKind,
+): boolean {
   if (!isRecord(value) || !Array.isArray(value.hooks)) return false;
+  const command =
+    event === "SessionStart" ? "context inject" : "context update-notice";
   return value.hooks.some(
     (handler) =>
       isRecord(handler) &&
       handler.type === "command" &&
-      handler.statusMessage === STATUS_MESSAGE &&
+      (event !== "SessionStart" || handler.statusMessage === STATUS_MESSAGE) &&
       typeof handler.command === "string" &&
-      handler.command.includes(`context inject --client ${client} `) &&
+      handler.command.includes(`${command} --client ${client} `) &&
       handler.command.endsWith(`${MANAGED_ARGUMENT} ${MANAGED_VERSION}`),
   );
 }
@@ -282,7 +327,11 @@ function validateDefinition(
     (definition.scope === "workspace" && !definition.workspace) ||
     (definition.scope === "global" && definition.workspace !== undefined) ||
     !definition.command.endsWith(`${MANAGED_ARGUMENT} ${MANAGED_VERSION}`) ||
-    /[\0\r\n]/.test(definition.command)
+    !definition.updateNoticeCommand.endsWith(
+      `${MANAGED_ARGUMENT} ${MANAGED_VERSION}`,
+    ) ||
+    /[\0\r\n]/.test(definition.command) ||
+    /[\0\r\n]/.test(definition.updateNoticeCommand)
   ) {
     throw new HivemndError(
       "MCP_REGISTRATION_INVALID",
@@ -291,7 +340,7 @@ function validateDefinition(
   }
 }
 
-function sessionStartGroups(document: unknown): unknown[] {
+function hookGroups(document: unknown, event: HookEvent): unknown[] {
   if (!isRecord(document)) {
     throw new HivemndError(
       "MCP_REGISTRATION_INVALID",
@@ -306,22 +355,70 @@ function sessionStartGroups(document: unknown): unknown[] {
       "Host hooks configuration must be an object",
     );
   }
-  const groups = hooks.SessionStart;
+  const groups = hooks[event];
   if (groups === undefined) return [];
   if (!Array.isArray(groups)) {
     throw new HivemndError(
       "MCP_REGISTRATION_INVALID",
-      "Host SessionStart hooks must be an array",
+      `Host ${event} hooks must be an array`,
     );
   }
   return groups;
 }
 
-function editSessionStart(content: string, groups: readonly unknown[]): string {
+function managedEvent(
+  document: unknown,
+  event: HookEvent,
+  client: AgentKind,
+): ManagedEvent {
+  const groups = hookGroups(document, event);
+  const managed = groups
+    .map((group, index) => ({ group, index }))
+    .filter(({ group }) => isManagedGroup(group, event, client));
+  if (managed.length > 1) {
+    throw conflict(`Host has multiple Hivemnd-owned ${event} hooks`);
+  }
+  return { groups, ...(managed[0] ? { entry: managed[0] } : {}) };
+}
+
+function replaceManaged(
+  groups: readonly unknown[],
+  entry: ManagedEvent["entry"],
+  expected: unknown,
+): readonly unknown[] {
+  return entry
+    ? groups.map((group, index) => (index === entry.index ? expected : group))
+    : [...groups, expected];
+}
+
+function withoutManaged(
+  groups: readonly unknown[],
+  index: number,
+): readonly unknown[] {
+  return groups.filter((_group, current) => current !== index);
+}
+
+function editHookEvents(
+  content: string,
+  sessionStart: readonly unknown[],
+  userPromptSubmit: readonly unknown[],
+): string {
+  return editHookEvent(
+    editHookEvent(content, "SessionStart", sessionStart),
+    "UserPromptSubmit",
+    userPromptSubmit,
+  );
+}
+
+function editHookEvent(
+  content: string,
+  event: HookEvent,
+  groups: readonly unknown[],
+): string {
   const eol = content.includes("\r\n") ? "\r\n" : "\n";
   return applyEdits(
     content,
-    modify(content, ["hooks", "SessionStart"], groups, {
+    modify(content, ["hooks", event], groups, {
       formattingOptions: { insertSpaces: true, tabSize: 2, eol },
     }),
   );

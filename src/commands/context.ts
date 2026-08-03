@@ -4,6 +4,7 @@ import type { AgentKind } from "../domain.js";
 import { HivemndError } from "../errors.js";
 import type { RuntimeDependencies } from "../runtime/dependencies.js";
 import { injectAlwaysContext } from "../context/injector.js";
+import { cachedUpdateNotice } from "../context/update-notice.js";
 
 interface ContextInjectOptions {
   readonly client: string;
@@ -51,6 +52,29 @@ export function registerContextCommands(
         input: await dependencies.readHookInput(),
       });
       if (result) dependencies.output.write(result);
+    });
+  context
+    .command("update-notice")
+    .requiredOption("--client <name>", "Codex or Claude Code host")
+    .requiredOption("--state-directory <path>", "Hivemnd state directory")
+    .requiredOption("--scope <scope>", "global or workspace hook scope")
+    .option("--workspace <path>", "canonical workspace path")
+    .requiredOption("--hivemnd-managed-hook <version>")
+    .action(async (options: ContextInjectOptions) => {
+      try {
+        if (options.hivemndManagedHook !== "1") return;
+        const result = await cachedUpdateNotice({
+          client: parseClient(options.client),
+          scope: parseScope(options.scope),
+          ...(options.workspace ? { workspace: options.workspace } : {}),
+          stateDirectory: options.stateDirectory,
+          input: await dependencies.readHookInput(),
+          updateService: dependencies.updateService,
+        });
+        if (result) dependencies.output.write(result);
+      } catch {
+        // Advisory hook failures must never change prompt submission.
+      }
     });
 }
 

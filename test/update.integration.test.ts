@@ -1,9 +1,18 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  lstat,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DailyUpdateChecker,
   UPDATE_COMMAND,
+  type UpdateCheckResult,
 } from "../src/update/daily-update-checker.js";
 import { compareSemver, parseSemver } from "../src/version/semver.js";
 import { temporaryDirectory } from "./helpers.js";
@@ -28,7 +37,6 @@ describe("daily npm update check", () => {
       fetcher,
       now: () => new Date("2026-07-27T10:00:00.000Z"),
     });
-
     await expect(checker.check()).resolves.toEqual({
       checked: true,
       currentVersion: "1.2.3",
@@ -143,6 +151,144 @@ describe("daily npm update check", () => {
       await checker("2026-07-27T00:00:00.000Z").check();
     }
     expect(fetcher).toHaveBeenCalledTimes(6);
+  });
+
+  it("inspects newer, equal and older fresh cache entries without ever fetching", async () => {
+    const temp = await temporaryDirectory();
+    cleanups.push(temp.cleanup);
+    const cachePath = join(temp.path, "update-check.json");
+    await mkdir(temp.path, { recursive: true });
+    const fetcher = vi.fn<typeof fetch>();
+    const checker = new DailyUpdateChecker({
+      currentVersion: "1.2.3",
+      stateDirectory: temp.path,
+      fetcher,
+      now: () => new Date("2026-07-27T10:00:00.000Z"),
+    });
+    const cacheOnlyChecker = checker as DailyUpdateChecker & {
+      cached(): Promise<UpdateCheckResult>;
+    };
+
+    for (const [latestStableVersion, updateAvailable] of [
+      ["1.4.0", true],
+      ["1.2.3", false],
+      ["1.1.9", false],
+    ] as const) {
+      await writeFile(
+        cachePath,
+        JSON.stringify({
+          checkedAt: "2026-07-27T09:00:00.000Z",
+          latestStableVersion,
+        }),
+      );
+      await expect(cacheOnlyChecker.cached()).resolves.toEqual({
+        checked: false,
+        currentVersion: "1.2.3",
+        latestVersion: latestStableVersion,
+        updateAvailable,
+        command: UPDATE_COMMAND,
+      });
+    }
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("ignores symlinked and oversized cache reads and replaces a cache symlink safely on write", async () => {
+    const temp = await temporaryDirectory();
+    cleanups.push(temp.cleanup);
+    const cachePath = join(temp.path, "update-check.json");
+    const linkedCache = join(temp.path, "linked-update-check.json");
+    const linkedContent = JSON.stringify({
+      checkedAt: "2026-07-27T09:00:00.000Z",
+      latestStableVersion: "1.4.0",
+    });
+    await writeFile(linkedCache, linkedContent);
+    await symlink(linkedCache, cachePath);
+    const fetcher = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            version: "1.4.0",
+          }),
+          { status: 200 },
+        ),
+    );
+    const checker = new DailyUpdateChecker({
+      currentVersion: "1.2.3",
+      stateDirectory: temp.path,
+      fetcher,
+      now: () => new Date("2026-07-27T10:00:00.000Z"),
+    });
+
+    await expect(checker.cached()).resolves.toMatchObject({
+      updateAvailable: false,
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+
+    await expect(checker.check({ force: true })).resolves.toMatchObject({
+      updateAvailable: true,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(await readFile(linkedCache, "utf8")).toBe(linkedContent);
+    expect((await lstat(cachePath)).isFile()).toBe(true);
+    expect(
+      JSON.parse(await readFile(cachePath, "utf8")) as Record<string, unknown>,
+    ).toEqual({
+      checkedAt: "2026-07-27T10:00:00.000Z",
+      latestStableVersion: "1.4.0",
+    });
+
+    await rm(cachePath);
+    await writeFile(cachePath, "x".repeat(16 * 1024 + 1));
+    await expect(checker.cached()).resolves.toMatchObject({
+      updateAvailable: false,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a silent cache-only result for missing, invalid, stale and future cache state without fetching", async () => {
+    const temp = await temporaryDirectory();
+    cleanups.push(temp.cleanup);
+    const cachePath = join(temp.path, "update-check.json");
+    const fetcher = vi.fn<typeof fetch>();
+    const checker = new DailyUpdateChecker({
+      currentVersion: "1.2.3",
+      stateDirectory: temp.path,
+      fetcher,
+      now: () => new Date("2026-07-27T10:00:00.000Z"),
+    });
+    const cacheOnlyChecker = checker as DailyUpdateChecker & {
+      cached(): Promise<UpdateCheckResult>;
+    };
+    const silent = {
+      checked: false,
+      currentVersion: "1.2.3",
+      updateAvailable: false,
+      command: UPDATE_COMMAND,
+    };
+
+    await expect(cacheOnlyChecker.cached()).resolves.toEqual(silent);
+    await mkdir(temp.path, { recursive: true });
+    for (const cache of [
+      "not-json",
+      JSON.stringify([]),
+      JSON.stringify({ checkedAt: "invalid", latestStableVersion: "1.4.0" }),
+      JSON.stringify({
+        checkedAt: "2026-07-26T09:59:59.999Z",
+        latestStableVersion: "1.4.0",
+      }),
+      JSON.stringify({
+        checkedAt: "2026-07-28T10:00:00.000Z",
+        latestStableVersion: "1.4.0",
+      }),
+      JSON.stringify({
+        checkedAt: "2026-07-27T09:00:00.000Z",
+        latestStableVersion: "beta",
+      }),
+    ]) {
+      await writeFile(cachePath, cache);
+      await expect(cacheOnlyChecker.cached()).resolves.toEqual(silent);
+    }
+    expect(fetcher).not.toHaveBeenCalled();
   });
 });
 
