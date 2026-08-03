@@ -84,7 +84,7 @@ export async function injectAlwaysContext(
     options.stateDirectory,
     new ConfigRepository(input.cwd),
   ).load();
-  const profile = selectProfile(registry, options, input.cwd);
+  const profile = selectEffectiveProfile(registry, options, input.cwd);
   if (!profile) return "";
   return new AlwaysContextCache({
     stateDirectory: options.stateDirectory,
@@ -92,7 +92,7 @@ export async function injectAlwaysContext(
   }).read(options.client, options.scope === "global" ? "user" : "workspace");
 }
 
-function selectProfile(
+export function selectEffectiveProfile(
   registry: OrganizationRegistry,
   options: Pick<
     AlwaysContextInjectionOptions,

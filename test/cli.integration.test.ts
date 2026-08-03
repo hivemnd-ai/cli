@@ -1,4 +1,15 @@
-import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  stat,
+  symlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -24,6 +35,10 @@ import type {
 } from "../src/domain.js";
 import { AlwaysContextCache } from "../src/context/always-context-cache.js";
 import { profileKey } from "../src/organizations/registry.js";
+import {
+  DailyUpdateChecker,
+  UPDATE_COMMAND,
+} from "../src/update/daily-update-checker.js";
 import { prepared } from "./helpers.js";
 import {
   api,
@@ -716,6 +731,387 @@ describe("authentication and diagnostics commands", () => {
     expect(empty.deps.output.messages).toEqual([
       "dry-run: 0 change(s); no destinations are configured",
     ]);
+  });
+});
+
+describe("cached CLI update notice hook command", () => {
+  const checkedAt = "2026-08-03T10:00:00.000Z";
+
+  async function configuredNoticeRuntime(latestVersion = "1.4.0"): Promise<
+    Awaited<ReturnType<typeof setup>> & {
+      runtime: RuntimeDependencies & {
+        output: ReturnType<typeof captureOutput>;
+      };
+      fetcher: ReturnType<typeof vi.fn<typeof fetch>>;
+    }
+  > {
+    const result = await setup();
+    const stateDirectory = result.deps.environment.HIVEMND_HOME!;
+    const apiUrl = "https://shared.hivemnd.cloud/eigen";
+    const key = profileKey(apiUrl);
+    await writeJson(join(stateDirectory, "registry.json"), {
+      version: 1,
+      profiles: [
+        {
+          key,
+          alias: "eigen",
+          name: "EIGEN",
+          slug: "eigen",
+          apiUrl,
+          configPath: join(stateDirectory, "config.json"),
+        },
+      ],
+      workspaceBindings: [],
+      globalBindings: [
+        { client: "codex", organizationKey: key },
+        { client: "claude", organizationKey: key },
+      ],
+    });
+    await writeJson(join(stateDirectory, "update-check.json"), {
+      checkedAt,
+      latestStableVersion: latestVersion,
+    });
+    const fetcher = vi.fn<typeof fetch>();
+    const output = captureOutput();
+    const runtime = {
+      ...result.deps,
+      clientVersion: "1.2.3",
+      output,
+      updateService: new DailyUpdateChecker({
+        currentVersion: "1.2.3",
+        stateDirectory,
+        fetcher,
+        now: () => new Date(checkedAt),
+      }),
+    };
+    return { ...result, runtime, fetcher };
+  }
+
+  function noticeArguments(
+    stateDirectory: string,
+    client: "codex" | "claude",
+    scope: "global" | "workspace" = "global",
+    workspace?: string,
+  ): string[] {
+    return [
+      "context",
+      "update-notice",
+      "--client",
+      client,
+      "--state-directory",
+      stateDirectory,
+      "--scope",
+      scope,
+      ...(workspace ? ["--workspace", workspace] : []),
+      "--hivemnd-managed-hook",
+      "1",
+    ];
+  }
+
+  function promptInput(
+    cwd: string,
+    sessionId: string,
+    overrides: Readonly<Record<string, unknown>> = {},
+  ): string {
+    return JSON.stringify({
+      hook_event_name: "UserPromptSubmit",
+      session_id: sessionId,
+      cwd,
+      prompt: "do not retain this private prompt",
+      ...overrides,
+    });
+  }
+
+  async function submit(
+    runtime: RuntimeDependencies,
+    args: readonly string[],
+    input: string,
+  ): Promise<number> {
+    return runCli(args, { ...runtime, readHookInput: async () => input });
+  }
+
+  it.each(["codex", "claude"] as const)(
+    "emits exact top-level systemMessage JSON once for a root %s session and again for a later version",
+    async (client) => {
+      const { temp, runtime, fetcher } = await configuredNoticeRuntime();
+      const stateDirectory = runtime.environment.HIVEMND_HOME!;
+      const args = noticeArguments(stateDirectory, client);
+      const input = promptInput(temp.path, `${client}-root-session`);
+      const message = `Hivemnd CLI update available: 1.2.3 -> 1.4.0. Run: ${UPDATE_COMMAND}`;
+
+      await expect(submit(runtime, args, input)).resolves.toBe(0);
+      expect(runtime.output.messages).toEqual([
+        JSON.stringify({ systemMessage: message }),
+      ]);
+      expect(
+        Object.keys(
+          JSON.parse(runtime.output.messages[0]!) as Record<string, unknown>,
+        ),
+      ).toEqual(["systemMessage"]);
+      runtime.output.messages.length = 0;
+      await expect(submit(runtime, args, input)).resolves.toBe(0);
+      expect(runtime.output.messages).toEqual([]);
+
+      await writeJson(join(stateDirectory, "update-check.json"), {
+        checkedAt,
+        latestStableVersion: "1.5.0",
+      });
+      await expect(submit(runtime, args, input)).resolves.toBe(0);
+      expect(runtime.output.messages).toEqual([
+        JSON.stringify({
+          systemMessage: `Hivemnd CLI update available: 1.2.3 -> 1.5.0. Run: ${UPDATE_COMMAND}`,
+        }),
+      ]);
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(runtime.output.errors).toEqual([]);
+    },
+  );
+
+  it("suppresses subagents and the shadowed global hook when a workspace binding is effective", async () => {
+    const { temp, runtime, fetcher } = await configuredNoticeRuntime();
+    const stateDirectory = runtime.environment.HIVEMND_HOME!;
+    const registryPath = join(stateDirectory, "registry.json");
+    const registry = JSON.parse(await readFile(registryPath, "utf8")) as {
+      profiles: Array<{ key: string }>;
+      workspaceBindings: unknown[];
+    };
+    registry.workspaceBindings = [
+      {
+        path: temp.path,
+        organizationKey: registry.profiles[0]!.key,
+        clients: ["codex", "claude"],
+      },
+    ];
+    await writeJson(registryPath, registry);
+
+    for (const client of ["codex", "claude"] as const) {
+      const input = promptInput(temp.path, `${client}-binding-session`);
+      await expect(
+        submit(runtime, noticeArguments(stateDirectory, client), input),
+      ).resolves.toBe(0);
+      await expect(
+        submit(
+          runtime,
+          noticeArguments(stateDirectory, client, "workspace", temp.path),
+          promptInput(temp.path, `${client}-child-session`, {
+            agent_id: "subagent-1",
+          }),
+        ),
+      ).resolves.toBe(0);
+      expect(runtime.output.messages).toEqual([]);
+
+      await expect(
+        submit(
+          runtime,
+          noticeArguments(stateDirectory, client, "workspace", temp.path),
+          input,
+        ),
+      ).resolves.toBe(0);
+      expect(runtime.output.messages).toHaveLength(1);
+      runtime.output.messages.length = 0;
+    }
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("uses one exclusive claim under concurrency and stores only a private hashed bounded record", async () => {
+    const { temp, runtime, fetcher } = await configuredNoticeRuntime();
+    const stateDirectory = runtime.environment.HIVEMND_HOME!;
+    const sessionId = "concurrent private session";
+    const prompt = promptInput(temp.path, sessionId);
+    const args = noticeArguments(stateDirectory, "codex");
+
+    await Promise.all(
+      Array.from({ length: 16 }, () => submit(runtime, args, prompt)),
+    );
+    expect(runtime.output.messages).toHaveLength(1);
+    const noticesDirectory = join(stateDirectory, "update-notices");
+    const expectedDigest = createHash("sha256")
+      .update(sessionId)
+      .update("\0")
+      .update("1.4.0")
+      .digest("hex");
+    const entries = await readdir(noticesDirectory);
+    expect(entries).toEqual([`${expectedDigest}.json`]);
+    expect((await stat(noticesDirectory)).mode & 0o777).toBe(0o700);
+    const claimPath = join(noticesDirectory, entries[0]!);
+    expect((await stat(claimPath)).mode & 0o777).toBe(0o600);
+    const claimText = await readFile(claimPath, "utf8");
+    const claim = JSON.parse(claimText) as Record<string, unknown>;
+    expect(claim.latestVersion).toBe("1.4.0");
+    expect(typeof claim.announcedAt).toBe("string");
+    if (typeof claim.announcedAt === "string") {
+      expect(claim.announcedAt).toMatch(
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+      );
+    }
+    expect(claimText).not.toContain(sessionId);
+    expect(claimText).not.toContain("private prompt");
+    expect(claimText).not.toContain(temp.path);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("expires old claims and caps retained regular claim files at 256", async () => {
+    const { temp, runtime } = await configuredNoticeRuntime();
+    const stateDirectory = runtime.environment.HIVEMND_HOME!;
+    const noticesDirectory = join(stateDirectory, "update-notices");
+    await mkdir(noticesDirectory, { recursive: true, mode: 0o700 });
+    const stalePath = join(noticesDirectory, `${"a".repeat(64)}.json`);
+    await writeJson(stalePath, {
+      latestVersion: "1.3.0",
+      announcedAt: "2020-01-01T00:00:00.000Z",
+    });
+    await utimes(stalePath, new Date("2020-01-01"), new Date("2020-01-01"));
+    const args = noticeArguments(stateDirectory, "codex");
+
+    for (let index = 0; index < 260; index += 1) {
+      await expect(
+        submit(runtime, args, promptInput(temp.path, `bounded-${index}`)),
+      ).resolves.toBe(0);
+    }
+    const entries = await readdir(noticesDirectory);
+    expect(entries).toHaveLength(256);
+    expect(entries).not.toContain(`${"a".repeat(64)}.json`);
+    expect(entries.every((entry) => /^[0-9a-f]{64}\.json$/.test(entry))).toBe(
+      true,
+    );
+    for (const entry of entries) {
+      expect((await lstat(join(noticesDirectory, entry))).isFile()).toBe(true);
+      expect((await stat(join(noticesDirectory, entry))).mode & 0o777).toBe(
+        0o600,
+      );
+    }
+  });
+
+  it("fails open with empty output for malformed payloads, invalid caches and unsafe or unwritable notice state", async () => {
+    const first = await configuredNoticeRuntime();
+    const stateDirectory = first.runtime.environment.HIVEMND_HOME!;
+    const args = noticeArguments(stateDirectory, "codex");
+    for (const input of [
+      "not-json",
+      JSON.stringify({ hook_event_name: "SessionStart" }),
+      JSON.stringify({
+        hook_event_name: "UserPromptSubmit",
+        session_id: "session",
+        cwd: "relative",
+      }),
+      JSON.stringify({
+        hook_event_name: "UserPromptSubmit",
+        cwd: first.temp.path,
+      }),
+    ]) {
+      await expect(submit(first.runtime, args, input)).resolves.toBe(0);
+    }
+    expect(first.runtime.output.messages).toEqual([]);
+    expect(first.runtime.output.errors).toEqual([]);
+
+    await expect(
+      submit(
+        first.runtime,
+        noticeArguments("relative-state", "codex"),
+        promptInput(first.temp.path, "relative-state"),
+      ),
+    ).resolves.toBe(0);
+    await expect(
+      submit(
+        first.runtime,
+        noticeArguments(stateDirectory, "codex", "workspace"),
+        promptInput(first.temp.path, "missing-workspace"),
+      ),
+    ).resolves.toBe(0);
+    await expect(
+      submit(
+        first.runtime,
+        noticeArguments(stateDirectory, "codex", "global", first.temp.path),
+        promptInput(first.temp.path, "unexpected-workspace"),
+      ),
+    ).resolves.toBe(0);
+    await expect(
+      submit(
+        first.runtime,
+        noticeArguments(stateDirectory, "codex"),
+        promptInput(first.temp.path, "oversized", {
+          prompt: "x".repeat(64 * 1024),
+        }),
+      ),
+    ).resolves.toBe(0);
+    const unsupportedMarker = noticeArguments(stateDirectory, "codex");
+    unsupportedMarker[unsupportedMarker.length - 1] = "2";
+    await expect(
+      submit(
+        first.runtime,
+        unsupportedMarker,
+        promptInput(first.temp.path, "unsupported-marker"),
+      ),
+    ).resolves.toBe(0);
+    expect(first.runtime.output.messages).toEqual([]);
+
+    await writeFile(join(stateDirectory, "update-check.json"), "invalid");
+    await expect(
+      submit(
+        first.runtime,
+        args,
+        promptInput(first.temp.path, "invalid-cache"),
+      ),
+    ).resolves.toBe(0);
+    expect(first.runtime.output.messages).toEqual([]);
+
+    const linked = await configuredNoticeRuntime();
+    const linkedState = linked.runtime.environment.HIVEMND_HOME!;
+    const linkTarget = join(linked.temp.path, "outside-notices");
+    await mkdir(linkTarget);
+    await symlink(linkTarget, join(linkedState, "update-notices"));
+    await expect(
+      submit(
+        linked.runtime,
+        noticeArguments(linkedState, "codex"),
+        promptInput(linked.temp.path, "symlink-session"),
+      ),
+    ).resolves.toBe(0);
+    expect(linked.runtime.output.messages).toEqual([]);
+    expect(await readdir(linkTarget)).toEqual([]);
+
+    const unwritable = await configuredNoticeRuntime();
+    const unwritableState = unwritable.runtime.environment.HIVEMND_HOME!;
+    await writeFile(join(unwritableState, "update-notices"), "not a directory");
+    await chmod(join(unwritableState, "update-notices"), 0o400);
+    await expect(
+      submit(
+        unwritable.runtime,
+        noticeArguments(unwritableState, "claude"),
+        promptInput(unwritable.temp.path, "io-failure-session"),
+      ),
+    ).resolves.toBe(0);
+    expect(unwritable.runtime.output.messages).toEqual([]);
+    expect(unwritable.runtime.output.errors).toEqual([]);
+    expect(linked.fetcher).not.toHaveBeenCalled();
+    expect(unwritable.fetcher).not.toHaveBeenCalled();
+  });
+
+  it("fails open when cleanup sees unrelated entries or the exclusive claim cannot be opened", async () => {
+    const { temp, runtime, fetcher } = await configuredNoticeRuntime();
+    const stateDirectory = runtime.environment.HIVEMND_HOME!;
+    const noticesDirectory = join(stateDirectory, "update-notices");
+    await mkdir(join(noticesDirectory, "unrelated-directory"), {
+      recursive: true,
+    });
+    const sessionId = "claim-is-a-directory";
+    const digest = createHash("sha256")
+      .update(sessionId)
+      .update("\0")
+      .update("1.4.0")
+      .digest("hex");
+    await mkdir(join(noticesDirectory, `${digest}.json`));
+
+    await expect(
+      submit(
+        runtime,
+        noticeArguments(stateDirectory, "codex"),
+        promptInput(temp.path, sessionId),
+      ),
+    ).resolves.toBe(0);
+    expect(runtime.output.messages).toEqual([]);
+    expect(runtime.output.errors).toEqual([]);
+    expect(fetcher).not.toHaveBeenCalled();
   });
 });
 
@@ -1724,7 +2120,7 @@ describe("command shell", () => {
     expect(defaultDependencies.clientPlatform).toBe(
       `${process.platform}-${process.arch}`,
     );
-    expect(defaultDependencies.clientVersion).toBe("0.5.1");
+    expect(defaultDependencies.clientVersion).toBe("0.5.2");
     expect(
       defaultDependencies.scheduleManagerFactory({
         apiUrl: "https://shared.hivemnd.cloud/eigen",

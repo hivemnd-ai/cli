@@ -1,7 +1,6 @@
 import type {
   AgentAdapter,
   Artifact,
-  ConflictReason,
   OwnershipEntry,
   PreparedManifest,
   SyncChange,
@@ -36,61 +35,57 @@ export class SyncPlanner {
       for (const artifact of desired) {
         const current = await adapter.read(artifact.relativePath);
         const owned = ownership.get(artifact.relativePath);
-        const conflictReason = findConflictReason(
-          artifact.logicalId,
+        const disposition = classifyDesiredArtifact(
+          artifact,
           current,
           owned,
+          options.adoptExisting,
         );
-        const adopt =
-          options.adoptExisting &&
-          current !== undefined &&
-          owned === undefined &&
-          sha256(current) === artifact.sha256;
         changes.push({
           artifact,
           agent: adapter.kind,
           destinationName: adapter.name,
           relativePath: artifact.relativePath,
           destination: adapter.destination(artifact.relativePath),
-          kind: adopt
-            ? "adopt"
-            : conflictReason
-              ? "conflict"
-              : current === undefined
-                ? "create"
-                : sha256(current) === artifact.sha256
-                  ? "unchanged"
-                  : "update",
-          ...(conflictReason && !adopt ? { conflictReason } : {}),
-          ...(conflictReason && owned
-            ? {
-                observedArtifactVersionId:
-                  current !== undefined && sha256(current) === owned.sha256
-                    ? owned.artifactVersionId
-                    : null,
-              }
-            : {}),
+          ...disposition,
         });
         ownership.delete(artifact.relativePath);
       }
 
       for (const owned of ownership.values()) {
-        const current = await adapter.read(owned.relativePath);
-        const conflictReason = findRemovalConflict(current, owned);
         changes.push({
           owned,
           agent: adapter.kind,
           destinationName: adapter.name,
           relativePath: owned.relativePath,
           destination: adapter.destination(owned.relativePath),
-          kind: conflictReason ? "conflict" : "remove",
-          ...(conflictReason ? { conflictReason } : {}),
-          ...(conflictReason ? { observedArtifactVersionId: null } : {}),
+          kind: "remove",
         });
       }
     }
     return changes;
   }
+}
+
+function classifyDesiredArtifact(
+  artifact: Artifact,
+  current: Uint8Array | undefined,
+  ownership: OwnershipEntry | undefined,
+  adoptExisting: boolean,
+): Pick<SyncChange, "kind" | "conflictReason"> {
+  if (current === undefined) return { kind: "create" };
+
+  const currentSha256 = sha256(current);
+  if (!ownership) {
+    return adoptExisting && currentSha256 === artifact.sha256
+      ? { kind: "adopt" }
+      : { kind: "conflict", conflictReason: "unmanaged-existing-file" };
+  }
+
+  if (ownership.logicalId !== artifact.logicalId) return { kind: "update" };
+  return {
+    kind: currentSha256 === artifact.sha256 ? "unchanged" : "update",
+  };
 }
 
 function validateManifestUniqueness(artifacts: readonly Artifact[]): void {
@@ -128,27 +123,4 @@ function validateDestinationAssignments(
     }
     paths.add(artifact.relativePath);
   }
-}
-
-function findConflictReason(
-  logicalId: string,
-  current: Uint8Array | undefined,
-  ownership: OwnershipEntry | undefined,
-): ConflictReason | undefined {
-  if (current === undefined)
-    return ownership ? "owned-file-missing" : undefined;
-  if (!ownership) return "unmanaged-existing-file";
-  if (ownership.logicalId !== logicalId) return "artifact-ownership-mismatch";
-  if (sha256(current) !== ownership.sha256) return "owned-content-drift";
-  return undefined;
-}
-
-function findRemovalConflict(
-  current: Uint8Array | undefined,
-  ownership: OwnershipEntry,
-): ConflictReason | undefined {
-  if (current === undefined) return "owned-file-missing";
-  return sha256(current) === ownership.sha256
-    ? undefined
-    : "owned-content-drift";
 }

@@ -49,6 +49,12 @@ describe("SessionStart hook registration", () => {
                 hooks: [{ type: "command", command: "user-command" }],
               },
             ],
+            UserPromptSubmit: [
+              {
+                matcher: "",
+                hooks: [{ type: "command", command: "user-prompt-command" }],
+              },
+            ],
             Stop: [{ hooks: [{ type: "command", command: "user-stop" }] }],
           },
         }),
@@ -66,6 +72,7 @@ describe("SessionStart hook registration", () => {
       expect(installed.description).toBe("user config");
       expect(installed.hooks.Stop).toHaveLength(1);
       expect(installed.hooks.SessionStart).toHaveLength(2);
+      expect(installed.hooks.UserPromptSubmit).toHaveLength(2);
       expect(JSON.stringify(installed)).not.toContain("SubagentStart");
       expect(JSON.stringify(installed)).toContain("additionalContextLimit");
       expect(JSON.stringify(installed)).toContain(
@@ -73,6 +80,25 @@ describe("SessionStart hook registration", () => {
       );
       expect(JSON.stringify(installed)).toContain("--scope global");
       expect(JSON.stringify(installed)).toContain("--hivemnd-managed-hook");
+      const promptHooks = (installed.hooks.UserPromptSubmit ?? []).flatMap(
+        (group) =>
+          Array.isArray(group.hooks)
+            ? (group.hooks as Array<Record<string, unknown>>)
+            : [],
+      );
+      const updateNotice = promptHooks.find(
+        (hook) =>
+          typeof hook.command === "string" &&
+          hook.command.includes("context update-notice"),
+      );
+      expect(updateNotice?.type).toBe("command");
+      expect(updateNotice?.timeout).toBe(5);
+      expect(typeof updateNotice?.command).toBe("string");
+      if (typeof updateNotice?.command === "string") {
+        expect(updateNotice.command).toContain("--client codex");
+      }
+      expect(updateNotice).not.toHaveProperty("statusMessage");
+      expect(updateNotice).not.toHaveProperty("additionalContextLimit");
       expect(await registration.status(definition())).toBe("installed");
       expect(await registration.install(definition())).toEqual({
         changed: false,
@@ -109,10 +135,16 @@ describe("SessionStart hook registration", () => {
       expect(await registration.status(revised)).toBe("missing");
       const restored = JSON.parse(await readFile(path, "utf8")) as {
         description: string;
-        hooks: { Stop: unknown };
+        hooks: { Stop: unknown; UserPromptSubmit: unknown[] };
       };
       expect(restored.description).toBe("user config");
       expect(Array.isArray(restored.hooks.Stop)).toBe(true);
+      expect(restored.hooks.UserPromptSubmit).toEqual([
+        {
+          matcher: "",
+          hooks: [{ type: "command", command: "user-prompt-command" }],
+        },
+      ]);
     } finally {
       await temp.cleanup();
     }
@@ -139,6 +171,8 @@ describe("SessionStart hook registration", () => {
       await registration.install(definition("claude", "workspace", "/repo"));
       const text = await readFile(path, "utf8");
       expect(text).toContain("SessionStart");
+      expect(text).toContain("UserPromptSubmit");
+      expect(text).toContain("context update-notice --client claude");
       expect(text).not.toContain("SubagentStart");
       expect(text).not.toContain("additionalContextLimit");
       expect(text).toContain("--scope workspace --workspace '/repo'");
@@ -288,6 +322,9 @@ describe("SessionStart hook registration", () => {
       const upgraded = await readFile(path, "utf8");
       expect(upgraded).toContain("--scope global");
       expect(upgraded).toContain('"additionalContextLimit": 12000');
+      expect(upgraded).toContain('"UserPromptSubmit"');
+      expect(upgraded).toContain("context update-notice --client codex");
+      expect(await registration.status(current)).toBe("installed");
     } finally {
       await temp.cleanup();
     }
@@ -300,8 +337,28 @@ describe("SessionStart hook registration", () => {
       const registration = new SessionStartHookRegistration(path, "codex");
       await registration.install(definition());
       const parsed = JSON.parse(await readFile(path, "utf8")) as {
-        hooks: { SessionStart: unknown[] };
+        hooks: { SessionStart: unknown[]; UserPromptSubmit: unknown[] };
       };
+      expect(parsed.hooks.UserPromptSubmit).toHaveLength(1);
+      parsed.hooks.UserPromptSubmit = [];
+      await writeFile(path, JSON.stringify(parsed));
+      await expect(registration.status(definition())).resolves.toBe("conflict");
+      await expect(registration.install(definition())).resolves.toEqual({
+        changed: true,
+        state: "installed",
+      });
+      const repaired = JSON.parse(await readFile(path, "utf8")) as {
+        hooks: { SessionStart: unknown[]; UserPromptSubmit: unknown[] };
+      };
+      repaired.hooks.UserPromptSubmit.push(repaired.hooks.UserPromptSubmit[0]);
+      await writeFile(path, JSON.stringify(repaired));
+      await expect(registration.install(definition())).rejects.toThrow(
+        "multiple",
+      );
+      repaired.hooks.UserPromptSubmit.pop();
+      await writeFile(path, JSON.stringify(repaired));
+      expect(await registration.status(definition())).toBe("installed");
+      parsed.hooks.SessionStart = repaired.hooks.SessionStart;
       parsed.hooks.SessionStart.push(parsed.hooks.SessionStart[0]);
       await writeFile(path, JSON.stringify(parsed));
       await expect(registration.install(definition())).rejects.toThrow(

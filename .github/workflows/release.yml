@@ -49,26 +49,8 @@ jobs:
           test "$(node dist/index.js --version)" = "$package_version"
           npm pack --dry-run
 
-      - name: Select npm authentication mode
-        id: npm-auth
-        env:
-          BOOTSTRAP_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if test -n "$BOOTSTRAP_TOKEN"; then
-            echo "bootstrap=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "bootstrap=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Publish with trusted publishing and provenance
-        if: steps.npm-auth.outputs.bootstrap == 'false'
         run: npm publish --access public --provenance
-
-      - name: Bootstrap the first public package with provenance
-        if: steps.npm-auth.outputs.bootstrap == 'true'
-        run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Prove registry installation
         run: |

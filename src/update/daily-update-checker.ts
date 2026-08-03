@@ -1,10 +1,13 @@
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { constants } from "node:fs";
+import { chmod, mkdir, open, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { compareSemver, isStableSemver } from "../version/semver.js";
 
 export const UPDATE_COMMAND = "npm install --global @hivemnd-ai/cli@latest";
 const registryUrl = "https://registry.npmjs.org/@hivemnd-ai%2fcli/latest";
 const oneDayMilliseconds = 24 * 60 * 60 * 1000;
+const maxCacheBytes = 16 * 1024;
 
 export interface UpdateCheckResult {
   readonly checked: boolean;
@@ -16,6 +19,7 @@ export interface UpdateCheckResult {
 
 export interface UpdateService {
   check(options?: { readonly force?: boolean }): Promise<UpdateCheckResult>;
+  readonly cached?: () => Promise<UpdateCheckResult>;
 }
 
 interface UpdateCache {
@@ -65,6 +69,14 @@ export class DailyUpdateChecker implements UpdateService {
     return this.result(true, latestVersion);
   }
 
+  async cached(): Promise<UpdateCheckResult> {
+    const cache = await this.readCache();
+    return this.result(
+      false,
+      cache && this.isFresh(cache) ? cache.latestStableVersion : undefined,
+    );
+  }
+
   private result(
     checked: boolean,
     latestVersion: string | undefined,
@@ -110,9 +122,19 @@ export class DailyUpdateChecker implements UpdateService {
 
   private async readCache(): Promise<UpdateCache | undefined> {
     try {
-      const parsed = JSON.parse(
-        await readFile(this.cachePath, "utf8"),
-      ) as unknown;
+      const handle = await open(
+        this.cachePath,
+        constants.O_RDONLY | constants.O_NOFOLLOW,
+      );
+      let text: string;
+      try {
+        const stats = await handle.stat();
+        if (!stats.isFile() || stats.size > maxCacheBytes) return undefined;
+        text = await handle.readFile("utf8");
+      } finally {
+        await handle.close();
+      }
+      const parsed = JSON.parse(text) as unknown;
       if (!isRecord(parsed) || typeof parsed.checkedAt !== "string")
         return undefined;
       if (
@@ -134,18 +156,24 @@ export class DailyUpdateChecker implements UpdateService {
   }
 
   private async writeCache(cache: UpdateCache): Promise<void> {
+    const temporaryPath = `${this.cachePath}.hivemnd-${randomUUID()}.tmp`;
     try {
       await mkdir(this.options.stateDirectory, {
         recursive: true,
         mode: 0o700,
       });
       await chmod(this.options.stateDirectory, 0o700);
-      await writeFile(this.cachePath, `${JSON.stringify(cache)}\n`, {
+      await writeFile(temporaryPath, `${JSON.stringify(cache)}\n`, {
         encoding: "utf8",
         mode: 0o600,
+        flag: "wx",
       });
+      await chmod(temporaryPath, 0o600);
+      await rename(temporaryPath, this.cachePath);
       await chmod(this.cachePath, 0o600);
     } catch {
+      /* v8 ignore next -- best-effort cleanup after an injected filesystem failure */
+      await rm(temporaryPath, { force: true }).catch(() => undefined);
       // A read-only home directory cannot make ordinary CLI commands fail.
     }
   }

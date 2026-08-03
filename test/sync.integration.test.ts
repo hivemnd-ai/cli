@@ -1,6 +1,6 @@
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { FilesystemAgentAdapter } from "../src/agents/filesystem-agent-adapter.js";
 import type {
   AgentAdapter,
@@ -266,44 +266,88 @@ describe("ownership-aware planning", () => {
     });
   });
 
-  it.each([
-    ["unmanaged-existing-file", "current", undefined],
-    ["owned-file-missing", undefined, entry("old")],
-    ["owned-content-drift", "changed", entry("old")],
-    [
-      "artifact-ownership-mismatch",
-      "old",
-      entry("old", { logicalId: "other" }),
-    ],
-  ] as const)("detects %s", async (reason, current, ownership) => {
-    const adapter = await setup(current, ownership ? [ownership] : []);
+  it("protects an unmanaged existing file as the sole artifact-path conflict", async () => {
+    const adapter = await setup("current");
     expect(
       (await new SyncPlanner().plan(prepared(), [adapter]))[0],
     ).toMatchObject({
       kind: "conflict",
-      conflictReason: reason,
+      conflictReason: "unmanaged-existing-file",
     });
   });
 
-  it("treats a missing or modified removal as conflict", async () => {
-    const missing = await setup(undefined, [entry("old")]);
-    expect(
-      (
-        await new SyncPlanner().plan({ ...prepared(), artifacts: [] }, [
-          missing,
-        ])
-      )[0],
-    ).toMatchObject({
-      conflictReason: "owned-file-missing",
+  it.each([
+    [
+      "recreates missing managed desired content",
+      undefined,
+      entry("old"),
+      "create",
+    ],
+    [
+      "replaces edited managed desired content",
+      "changed",
+      entry("old"),
+      "update",
+    ],
+    [
+      "replaces a path reassigned to another logical artifact",
+      "old",
+      entry("old", { logicalId: "other" }),
+      "update",
+    ],
+  ] as const)("%s", async (_scenario, current, ownership, kind) => {
+    const adapter = await setup(current, [ownership]);
+    const changes = await new SyncPlanner().plan(prepared(), [adapter]);
+
+    expect(changes[0]).toMatchObject({ kind });
+    await new SyncApplier().apply(prepared(), changes, [adapter]);
+    await expect(adapter.read("skills/team/SKILL.md")).resolves.toEqual(
+      bytes("# Team skill\n"),
+    );
+    await expect(adapter.readOwnership()).resolves.toEqual([
+      expect.objectContaining({
+        logicalId: "artifact-1",
+        artifactVersionId: "version-1",
+        releaseId: "release-1",
+      }),
+    ]);
+  });
+
+  it.each([
+    ["removes an already missing obsolete managed file", undefined],
+    ["removes an edited obsolete managed file", "changed"],
+  ] as const)("%s", async (_scenario, current) => {
+    const adapter = await setup(current, [entry("old")]);
+    const empty = { ...prepared(), artifacts: [] };
+    const changes = await new SyncPlanner().plan(empty, [adapter]);
+
+    expect(changes[0]).toMatchObject({ kind: "remove" });
+    await new SyncApplier().apply(empty, changes, [adapter]);
+    await expect(adapter.read("skills/team/SKILL.md")).resolves.toBeUndefined();
+    await expect(adapter.readOwnership()).resolves.toEqual([]);
+  });
+
+  it("atomically replaces bytes and ownership when Cloud reassigns a managed path", async () => {
+    const prior = entry("prior", {
+      logicalId: "artifact-prior",
+      artifactVersionId: "version-prior",
     });
-    const drift = await setup("changed", [entry("old")]);
-    expect(
-      (
-        await new SyncPlanner().plan({ ...prepared(), artifacts: [] }, [drift])
-      )[0],
-    ).toMatchObject({
-      conflictReason: "owned-content-drift",
-    });
+    const adapter = await setup("locally edited prior bytes", [prior]);
+    const changes = await new SyncPlanner().plan(prepared(), [adapter]);
+
+    await new SyncApplier().apply(prepared(), changes, [adapter]);
+
+    await expect(adapter.read("skills/team/SKILL.md")).resolves.toEqual(
+      bytes("# Team skill\n"),
+    );
+    await expect(adapter.readOwnership()).resolves.toEqual([
+      expect.objectContaining({
+        relativePath: "skills/team/SKILL.md",
+        logicalId: "artifact-1",
+        artifactVersionId: "version-1",
+        releaseId: "release-1",
+      }),
+    ]);
   });
 
   it("rejects duplicate version, logical identity, and target path", async () => {
@@ -602,21 +646,24 @@ describe("transactional apply", () => {
     expect(codex.ledger).toEqual([]);
   });
 
-  it("restores previous file contents during rollback", async () => {
+  it("restores managed drift bytes and ownership after a later write fails", async () => {
     const codex = memoryAdapter("codex");
-    codex.files.set("skills/team/SKILL.md", bytes("old"));
+    codex.files.set("skills/team/SKILL.md", bytes("locally edited"));
     codex.ledger = [entry("old")];
     const claude = memoryAdapter("claude", true);
+    const codexWrite = vi.spyOn(codex, "write");
+    const changes = await new SyncPlanner().plan(prepared(), [codex, claude]);
+
     await expect(
-      new SyncApplier().apply(
-        prepared(),
-        [change("update"), change("create", "claude")],
-        [codex, claude],
-      ),
+      new SyncApplier().apply(prepared(), changes, [codex, claude]),
     ).rejects.toMatchObject({ code: "SYNC_FAILED" });
+    expect(codexWrite).toHaveBeenCalledWith(
+      "skills/team/SKILL.md",
+      bytes("# Team skill\n"),
+    );
     expect(
       Buffer.from(codex.files.get("skills/team/SKILL.md")!).toString(),
-    ).toBe("old");
+    ).toBe("locally edited");
     expect(codex.ledger).toEqual([entry("old")]);
   });
 });

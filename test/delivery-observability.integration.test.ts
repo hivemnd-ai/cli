@@ -904,18 +904,42 @@ describe("durable installation delivery observations", () => {
     ).rejects.toMatchObject({ code: "SYNC_FAILED" });
   });
 
-  it("rolls filesystem state back when required outbox staging fails", async () => {
+  it("rolls managed drift bytes and ownership back when required outbox staging fails", async () => {
     const fixture = await cliFixture();
     const selected = fixture.config.destinations[0]!;
-    const managed = join(selected.path!, ".agents/skills/team/SKILL.md");
+    const artifact = fixture.manifest.artifacts[0]!;
+    const adapter = fixture.adapterFactory(fixture.config, [selected.name])[0]!;
+    const priorOwnership = {
+      relativePath: artifact.relativePath,
+      logicalId: artifact.logicalId,
+      artifactVersionId: "60000000-0000-4000-8000-000000000010",
+      sha256: hash("# previously published\n"),
+      releaseId: "60000000-0000-4000-8000-000000000011",
+    };
+    await adapter.write(
+      artifact.relativePath,
+      bytes("# unsupported local edit\n"),
+    );
+    await adapter.replaceOwnership([priorOwnership]);
+    const write = vi.spyOn(adapter, "write");
     vi.spyOn(ReceiptOutbox.prototype, "stage").mockRejectedValueOnce(
       new Error("simulated atomic rename failure"),
     );
 
     await expect(
-      runCli(["sync", "--all", "--apply"], fixture.dependencies),
+      runCli(["sync", "--all", "--apply"], {
+        ...fixture.dependencies,
+        adapterFactory: () => [adapter],
+      }),
     ).resolves.toBe(1);
-    await expect(readFile(managed)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(adapter.read(artifact.relativePath)).resolves.toEqual(
+      bytes("# unsupported local edit\n"),
+    );
+    await expect(adapter.readOwnership()).resolves.toEqual([priorOwnership]);
+    expect(write).toHaveBeenCalledWith(
+      artifact.relativePath,
+      bytes("# Team skill\n"),
+    );
     expect(fixture.receiptCall).toHaveBeenCalledWith(
       "current-token",
       expect.objectContaining({ status: "failed", clientSequence: 1 }),
@@ -964,6 +988,86 @@ describe("durable installation delivery observations", () => {
     });
     expect(await outbox.pending()).toEqual([]);
     expect(fixture.dependencies.output.messages).toContain("receipt: accepted");
+  });
+
+  it("applies managed drift and removal with no owned-state conflict receipt", async () => {
+    const fixture = await cliFixture();
+    const selected = fixture.config.destinations[0]!;
+    const artifact = fixture.manifest.artifacts[0]!;
+    const adapter = fixture.adapterFactory(fixture.config, [selected.name])[0]!;
+    const obsoletePath = "skills/obsolete/SKILL.md";
+    await adapter.write(
+      artifact.relativePath,
+      bytes("# unsupported local edit\n"),
+    );
+    await adapter.write(obsoletePath, bytes("# edited obsolete copy\n"));
+    await adapter.replaceOwnership([
+      {
+        relativePath: artifact.relativePath,
+        logicalId: artifact.logicalId,
+        artifactVersionId: "60000000-0000-4000-8000-000000000010",
+        sha256: hash("# previously published\n"),
+        releaseId: "60000000-0000-4000-8000-000000000011",
+      },
+      {
+        relativePath: obsoletePath,
+        logicalId: "60000000-0000-4000-8000-000000000012",
+        artifactVersionId: "60000000-0000-4000-8000-000000000013",
+        sha256: hash("# previously published obsolete copy\n"),
+        releaseId: "60000000-0000-4000-8000-000000000011",
+      },
+    ]);
+
+    await expect(
+      runCli(["sync", "--all", "--apply"], {
+        ...fixture.dependencies,
+        adapterFactory: () => [adapter],
+      }),
+    ).resolves.toBe(0);
+
+    await expect(adapter.read(artifact.relativePath)).resolves.toEqual(
+      bytes("# Team skill\n"),
+    );
+    await expect(adapter.read(obsoletePath)).resolves.toBeUndefined();
+    await expect(adapter.readOwnership()).resolves.toEqual([
+      expect.objectContaining({
+        relativePath: artifact.relativePath,
+        logicalId: artifact.logicalId,
+        artifactVersionId: artifact.artifactVersionId,
+        releaseId: fixture.manifest.release.id,
+      }),
+    ]);
+    const observation = vi
+      .mocked(fixture.receiptCall)
+      .mock.calls.map(([, value]) => value)
+      .find(
+        (value): value is DeliveryObservationReceipt =>
+          "clientSequence" in value,
+      );
+    expect(observation?.status).toBe("applied");
+    const operations =
+      observation?.destinations.flatMap((destination) =>
+        destination.operations.map((operation) => operation),
+      ) ?? [];
+    expect(operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          artifactId: artifact.logicalId,
+          outcome: "applied",
+          reason: "updated",
+        }),
+        expect.objectContaining({
+          artifactId: "60000000-0000-4000-8000-000000000012",
+          outcome: "removed",
+          reason: "no_longer_desired",
+        }),
+      ]),
+    );
+    expect(operations).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ outcome: "conflict" }),
+      ]),
+    );
   });
 
   it("includes a newly cached always-context version in the selected destination snapshot", async () => {
@@ -1331,6 +1435,7 @@ async function cliFixture(
     stateDirectory,
     config: selectedConfig,
     api: selectedApi,
+    manifest: selectedManifest,
     receiptCall,
     dependencies,
     adapterFactory,
