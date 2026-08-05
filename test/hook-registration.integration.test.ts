@@ -27,6 +27,66 @@ function definition(
 }
 
 describe("SessionStart hook registration", () => {
+  it("installs Claude slash-only expansion coverage and never installs a Codex or PreToolUse Skill hook", async () => {
+    const temp = await temporaryDirectory();
+    try {
+      const claudePath = join(temp.path, "claude.json");
+      const codexPath = join(temp.path, "codex.json");
+      await new SessionStartHookRegistration(claudePath, "claude").install(
+        definition("claude"),
+      );
+      await new SessionStartHookRegistration(codexPath, "codex").install(
+        definition("codex"),
+      );
+      const claude = await readFile(claudePath, "utf8");
+      const codex = await readFile(codexPath, "utf8");
+      expect(claude).toContain('"UserPromptExpansion"');
+      expect(claude).toContain("context skill-activated --client claude");
+      expect(claude).not.toContain("PreToolUse");
+      expect(codex).not.toContain("UserPromptExpansion");
+      expect(codex).not.toContain("skill-activated");
+
+      const legacy = JSON.parse(claude) as {
+        hooks: Record<string, unknown>;
+      };
+      delete legacy.hooks.UserPromptExpansion;
+      await writeFile(
+        claudePath,
+        JSON.stringify(legacy).replaceAll(
+          "--hivemnd-managed-hook 2",
+          "--hivemnd-managed-hook 1",
+        ),
+      );
+      const claudeRegistration = new SessionStartHookRegistration(
+        claudePath,
+        "claude",
+      );
+      await expect(
+        claudeRegistration.status(definition("claude")),
+      ).resolves.toBe("conflict");
+      await expect(
+        claudeRegistration.install(definition("claude")),
+      ).resolves.toEqual({ changed: true, state: "installed" });
+      const upgraded = JSON.parse(await readFile(claudePath, "utf8")) as {
+        hooks: Record<string, unknown>;
+      };
+      expect(upgraded.hooks).toHaveProperty("UserPromptExpansion");
+      delete upgraded.hooks.UserPromptExpansion;
+      await writeFile(
+        claudePath,
+        JSON.stringify(upgraded).replaceAll(
+          "--hivemnd-managed-hook 2",
+          "--hivemnd-managed-hook 1",
+        ),
+      );
+      await expect(
+        claudeRegistration.remove(definition("claude")),
+      ).resolves.toEqual({ changed: true, state: "missing" });
+    } finally {
+      await temp.cleanup();
+    }
+  });
+
   it("resolves the managed cache from HIVEMND_HOME or the user home", () => {
     expect(
       managedHookStateDirectory({ HIVEMND_HOME: "/private/state" }, "/home/x"),
@@ -292,7 +352,9 @@ describe("SessionStart hook registration", () => {
     try {
       const path = join(temp.path, "hooks.json");
       const current = definition();
-      const legacyCommand = current.command.replace(" --scope global", "");
+      const legacyCommand = current.command
+        .replace(" --scope global", "")
+        .replace("--hivemnd-managed-hook 2", "--hivemnd-managed-hook 1");
       await writeFile(
         path,
         JSON.stringify({
@@ -336,6 +398,7 @@ describe("SessionStart hook registration", () => {
       const path = join(temp.path, "hooks.json");
       const registration = new SessionStartHookRegistration(path, "codex");
       await registration.install(definition());
+      const installedText = await readFile(path, "utf8");
       const parsed = JSON.parse(await readFile(path, "utf8")) as {
         hooks: { SessionStart: unknown[]; UserPromptSubmit: unknown[] };
       };
@@ -343,10 +406,23 @@ describe("SessionStart hook registration", () => {
       parsed.hooks.UserPromptSubmit = [];
       await writeFile(path, JSON.stringify(parsed));
       await expect(registration.status(definition())).resolves.toBe("conflict");
-      await expect(registration.install(definition())).resolves.toEqual({
-        changed: true,
-        state: "installed",
+      await expect(registration.install(definition())).rejects.toMatchObject({
+        code: "MCP_REGISTRATION_CONFLICT",
       });
+      expect(await readFile(path, "utf8")).toBe(JSON.stringify(parsed));
+      await writeFile(path, installedText);
+      const tampered = JSON.parse(installedText) as {
+        hooks: {
+          SessionStart: { matcher: string }[];
+        };
+      };
+      tampered.hooks.SessionStart[0]!.matcher = "startup";
+      await writeFile(path, JSON.stringify(tampered));
+      await expect(registration.install(definition())).rejects.toMatchObject({
+        code: "MCP_REGISTRATION_CONFLICT",
+      });
+      expect(await readFile(path, "utf8")).toBe(JSON.stringify(tampered));
+      await writeFile(path, installedText);
       const repaired = JSON.parse(await readFile(path, "utf8")) as {
         hooks: { SessionStart: unknown[]; UserPromptSubmit: unknown[] };
       };

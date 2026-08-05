@@ -24,6 +24,10 @@ const configSchema = z.object({
     .refine((value) => ["http:", "https:"].includes(new URL(value).protocol), {
       message: "apiUrl must use http or https",
     }),
+  installationId: z
+    .string()
+    .regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/)
+    .optional(),
   destinations: z
     .array(
       z
@@ -217,7 +221,16 @@ function parseConfig(value: unknown): {
     upgraded = true;
     return { ...destination, id: randomUUID() };
   });
-  return { config: { ...parsed, destinations }, upgraded };
+  return {
+    config: {
+      apiUrl: parsed.apiUrl,
+      ...(parsed.installationId
+        ? { installationId: parsed.installationId }
+        : {}),
+      destinations,
+    },
+    upgraded,
+  };
 }
 
 export async function loadConfig(

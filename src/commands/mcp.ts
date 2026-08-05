@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { AgentKind } from "../domain.js";
 import { HivemndError } from "../errors.js";
@@ -62,6 +62,9 @@ export function registerMcpCommands(
           ? { clientFeatures: dependencies.clientFeatures }
           : {}),
         ...(runtime.fetcher ? { fetcher: runtime.fetcher } : {}),
+        stateDirectory:
+          dependencies.environment?.HIVEMND_HOME ??
+          join(runtime.homeDirectory ?? homedir(), ".hivemnd"),
       });
     });
 

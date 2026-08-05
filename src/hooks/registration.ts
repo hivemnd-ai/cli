@@ -19,7 +19,8 @@ import type {
 } from "../mcp/registration.js";
 
 const MANAGED_ARGUMENT = "--hivemnd-managed-hook";
-const MANAGED_VERSION = "1";
+const MANAGED_VERSION = "2";
+const LEGACY_MANAGED_VERSION = "1";
 const STATUS_MESSAGE = "Loading verified Hivemnd context";
 
 interface Snapshot {
@@ -34,6 +35,7 @@ export interface HookLauncherDefinition {
   readonly workspace?: string;
   readonly command: string;
   readonly updateNoticeCommand: string;
+  readonly skillActivationCommand?: string;
   readonly stateDirectory: string;
 }
 
@@ -74,15 +76,57 @@ export class HostHookRegistration {
     const document = parseConfig(current.content);
     const session = managedEvent(document, "SessionStart", this.client);
     const prompt = managedEvent(document, "UserPromptSubmit", this.client);
+    const skill = optionalClaudeSkillEvent(document, this.client);
     const expectedSession = sessionStartHookGroup(definition);
     const expectedPrompt = updateNoticeHookGroup(definition);
+    const expectedSkill = skillActivationHookGroup(definition);
     if (
       session.entry &&
       prompt.entry &&
       sameValue(session.entry.group, expectedSession) &&
-      sameValue(prompt.entry.group, expectedPrompt)
+      sameValue(prompt.entry.group, expectedPrompt) &&
+      (this.client === "codex" ||
+        (skill.entry && sameValue(skill.entry.group, expectedSkill)))
     ) {
       return { changed: false, state: "installed" };
+    }
+    const hasManagedEntry = Boolean(
+      session.entry ?? prompt.entry ?? skill.entry,
+    );
+    const currentPairCanUpgrade =
+      session.entry &&
+      prompt.entry &&
+      sameShapeExceptCommand(session.entry.group, expectedSession) &&
+      sameShapeExceptCommand(prompt.entry.group, expectedPrompt);
+    const exactLegacyClaudeCanUpgrade =
+      this.client === "claude" &&
+      !skill.entry &&
+      currentPairCanUpgrade &&
+      managedGroupVersion(session.entry.group) === LEGACY_MANAGED_VERSION &&
+      managedGroupVersion(prompt.entry.group) === LEGACY_MANAGED_VERSION;
+    const currentShapeCanUpgrade =
+      currentPairCanUpgrade &&
+      (this.client === "codex" ||
+        Boolean(
+          skill.entry &&
+          sameShapeExceptCommand(skill.entry.group, expectedSkill),
+        ));
+    const exactOldCodexCanUpgrade =
+      this.client === "codex" &&
+      session.entry &&
+      !prompt.entry &&
+      sameShapeExceptCommand(
+        session.entry.group,
+        oldCodexSessionStartHookGroup(definition),
+      ) &&
+      managedGroupVersion(session.entry.group) === LEGACY_MANAGED_VERSION;
+    if (
+      hasManagedEntry &&
+      !currentShapeCanUpgrade &&
+      !exactLegacyClaudeCanUpgrade &&
+      !exactOldCodexCanUpgrade
+    ) {
+      throw conflict("Hivemnd's managed hooks were modified");
     }
     const nextSession = replaceManaged(
       session.groups,
@@ -94,7 +138,16 @@ export class HostHookRegistration {
       prompt.entry,
       expectedPrompt,
     );
-    const next = editHookEvents(current.content, nextSession, nextPrompt);
+    const nextSkill =
+      this.client === "claude"
+        ? replaceManaged(skill.groups, skill.entry, expectedSkill)
+        : skill.groups;
+    const next = editHookEvents(
+      current.content,
+      nextSession,
+      nextPrompt,
+      this.client === "claude" ? nextSkill : undefined,
+    );
     await atomicWrite(this.path, next, current.mode);
     return { changed: true, state: "installed" };
   }
@@ -105,14 +158,26 @@ export class HostHookRegistration {
     const document = parseConfig(current.content);
     const session = managedEvent(document, "SessionStart", this.client);
     const prompt = managedEvent(document, "UserPromptSubmit", this.client);
-    if (!session.entry && !prompt.entry) {
+    const skill = optionalClaudeSkillEvent(document, this.client);
+    if (!session.entry && !prompt.entry && !skill.entry) {
       return { changed: false, state: "missing" };
     }
+    const legacy = withManagedVersion(expected, LEGACY_MANAGED_VERSION);
+    const currentPair =
+      session.entry &&
+      prompt.entry &&
+      sameValue(session.entry.group, sessionStartHookGroup(expected)) &&
+      sameValue(prompt.entry.group, updateNoticeHookGroup(expected));
+    const legacyPair =
+      !skill.entry &&
+      session.entry &&
+      prompt.entry &&
+      sameValue(session.entry.group, sessionStartHookGroup(legacy)) &&
+      sameValue(prompt.entry.group, updateNoticeHookGroup(legacy));
     if (
-      !session.entry ||
-      !prompt.entry ||
-      !sameValue(session.entry.group, sessionStartHookGroup(expected)) ||
-      !sameValue(prompt.entry.group, updateNoticeHookGroup(expected))
+      (!currentPair && !legacyPair) ||
+      (skill.entry &&
+        !sameValue(skill.entry.group, skillActivationHookGroup(expected)))
     ) {
       throw conflict("Hivemnd's managed hooks were modified");
     }
@@ -120,6 +185,11 @@ export class HostHookRegistration {
       current.content,
       withoutManaged(session.groups, session.entry.index),
       withoutManaged(prompt.groups, prompt.entry.index),
+      this.client === "claude"
+        ? skill.entry
+          ? withoutManaged(skill.groups, skill.entry.index)
+          : skill.groups
+        : undefined,
     );
     await atomicWrite(this.path, next, current.mode);
     return { changed: true, state: "missing" };
@@ -130,11 +200,16 @@ export class HostHookRegistration {
       const document = parseConfig((await readConfig(this.path)).content);
       const session = managedEvent(document, "SessionStart", this.client);
       const prompt = managedEvent(document, "UserPromptSubmit", this.client);
-      if (!session.entry && !prompt.entry) return "missing";
+      const skill = optionalClaudeSkillEvent(document, this.client);
+      if (!session.entry && !prompt.entry && !skill.entry) return "missing";
+      /* v8 ignore next -- every partial owned shape is the same bounded conflict state */
       return session.entry &&
         prompt.entry &&
         sameValue(session.entry.group, sessionStartHookGroup(expected)) &&
-        sameValue(prompt.entry.group, updateNoticeHookGroup(expected))
+        sameValue(prompt.entry.group, updateNoticeHookGroup(expected)) &&
+        (this.client === "codex" ||
+          (skill.entry &&
+            sameValue(skill.entry.group, skillActivationHookGroup(expected))))
         ? "installed"
         : "conflict";
     } catch {
@@ -213,6 +288,15 @@ export function hookLauncherDefinition(
     updateNoticeCommand: [...launcher, "update-notice", ...invocation].join(
       " ",
     ),
+    ...(options.client === "claude"
+      ? {
+          skillActivationCommand: [
+            ...launcher,
+            "skill-activated",
+            ...invocation,
+          ].join(" "),
+        }
+      : {}),
   };
 }
 
@@ -222,6 +306,25 @@ function requiredWorkspace(value: string | undefined): string {
     "MCP_REGISTRATION_INVALID",
     "Workspace SessionStart hook requires an absolute workspace path",
   );
+}
+
+function withManagedVersion(
+  definition: HookLauncherDefinition,
+  version: string,
+): HookLauncherDefinition {
+  const replace = (command: string): string =>
+    command.replace(
+      new RegExp(`${MANAGED_ARGUMENT} \\d+$`),
+      `${MANAGED_ARGUMENT} ${version}`,
+    );
+  return {
+    ...definition,
+    command: replace(definition.command),
+    updateNoticeCommand: replace(definition.updateNoticeCommand),
+    ...(definition.skillActivationCommand
+      ? { skillActivationCommand: replace(definition.skillActivationCommand) }
+      : {}),
+  };
 }
 
 export function hostHookRegistration(
@@ -257,11 +360,20 @@ export function hookInstallOperation(
 
 export { HostHookRegistration as SessionStartHookRegistration };
 
-type HookEvent = "SessionStart" | "UserPromptSubmit";
+type HookEvent = "SessionStart" | "UserPromptSubmit" | "UserPromptExpansion";
 
 interface ManagedEvent {
   readonly groups: readonly unknown[];
   readonly entry?: { readonly group: unknown; readonly index: number };
+}
+
+function optionalClaudeSkillEvent(
+  document: unknown,
+  client: AgentKind,
+): ManagedEvent {
+  return client === "claude"
+    ? managedEvent(document, "UserPromptExpansion", client)
+    : { groups: [] };
 }
 
 function sessionStartHookGroup(
@@ -298,6 +410,37 @@ function updateNoticeHookGroup(
   };
 }
 
+function skillActivationHookGroup(
+  definition: HookLauncherDefinition,
+): Record<string, unknown> {
+  if (!definition.skillActivationCommand) {
+    return { matcher: "", hooks: [] };
+  }
+  return {
+    matcher: "",
+    hooks: [
+      {
+        type: "command",
+        command: definition.skillActivationCommand,
+        timeout: 5,
+      },
+    ],
+  };
+}
+
+function oldCodexSessionStartHookGroup(
+  definition: HookLauncherDefinition,
+): Record<string, unknown> {
+  const legacy = sessionStartHookGroup(
+    withManagedVersion(definition, LEGACY_MANAGED_VERSION),
+  );
+  const handler = (legacy.hooks as Record<string, unknown>[])[0];
+  return {
+    ...legacy,
+    hooks: [{ ...handler, additionalContextLimit: 2500 }],
+  };
+}
+
 function isManagedGroup(
   value: unknown,
   event: HookEvent,
@@ -305,7 +448,11 @@ function isManagedGroup(
 ): boolean {
   if (!isRecord(value) || !Array.isArray(value.hooks)) return false;
   const command =
-    event === "SessionStart" ? "context inject" : "context update-notice";
+    event === "SessionStart"
+      ? "context inject"
+      : event === "UserPromptSubmit"
+        ? "context update-notice"
+        : "context skill-activated";
   return value.hooks.some(
     (handler) =>
       isRecord(handler) &&
@@ -313,7 +460,9 @@ function isManagedGroup(
       (event !== "SessionStart" || handler.statusMessage === STATUS_MESSAGE) &&
       typeof handler.command === "string" &&
       handler.command.includes(`${command} --client ${client} `) &&
-      handler.command.endsWith(`${MANAGED_ARGUMENT} ${MANAGED_VERSION}`),
+      [MANAGED_VERSION, LEGACY_MANAGED_VERSION].some((version) =>
+        String(handler.command).endsWith(`${MANAGED_ARGUMENT} ${version}`),
+      ),
   );
 }
 
@@ -330,8 +479,14 @@ function validateDefinition(
     !definition.updateNoticeCommand.endsWith(
       `${MANAGED_ARGUMENT} ${MANAGED_VERSION}`,
     ) ||
+    (client === "claude" &&
+      !definition.skillActivationCommand?.endsWith(
+        `${MANAGED_ARGUMENT} ${MANAGED_VERSION}`,
+      )) ||
     /[\0\r\n]/.test(definition.command) ||
-    /[\0\r\n]/.test(definition.updateNoticeCommand)
+    /[\0\r\n]/.test(definition.updateNoticeCommand) ||
+    (definition.skillActivationCommand !== undefined &&
+      /[\0\r\n]/.test(definition.skillActivationCommand))
   ) {
     throw new HivemndError(
       "MCP_REGISTRATION_INVALID",
@@ -402,12 +557,16 @@ function editHookEvents(
   content: string,
   sessionStart: readonly unknown[],
   userPromptSubmit: readonly unknown[],
+  userPromptExpansion?: readonly unknown[],
 ): string {
-  return editHookEvent(
+  const base = editHookEvent(
     editHookEvent(content, "SessionStart", sessionStart),
     "UserPromptSubmit",
     userPromptSubmit,
   );
+  return userPromptExpansion
+    ? editHookEvent(base, "UserPromptExpansion", userPromptExpansion)
+    : base;
 }
 
 function editHookEvent(
@@ -511,6 +670,31 @@ function shellQuote(value: string): string {
 
 function sameValue(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function sameShapeExceptCommand(left: unknown, right: unknown): boolean {
+  const withoutCommand = (key: string, value: unknown): unknown =>
+    key === "command" && typeof value === "string" ? "<managed>" : value;
+  return (
+    JSON.stringify(left, withoutCommand) ===
+    JSON.stringify(right, withoutCommand)
+  );
+}
+
+function managedGroupVersion(value: unknown): string | undefined {
+  /* v8 ignore next -- callers pass groups already proven to contain managed hooks */
+  if (!isRecord(value) || !Array.isArray(value.hooks)) return undefined;
+  for (const handler of value.hooks) {
+    /* v8 ignore next -- an exact upgradable shape contains one command handler */
+    if (!isRecord(handler) || typeof handler.command !== "string") continue;
+    for (const version of [MANAGED_VERSION, LEGACY_MANAGED_VERSION]) {
+      if (handler.command.endsWith(`${MANAGED_ARGUMENT} ${version}`)) {
+        return version;
+      }
+    }
+  }
+  /* v8 ignore next -- callers pass only groups already proven to own a managed marker */
+  return undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

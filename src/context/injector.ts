@@ -1,4 +1,5 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { AgentKind } from "../domain.js";
 import { HivemndError } from "../errors.js";
@@ -9,6 +10,7 @@ import type {
 } from "../organizations/types.js";
 import { ConfigRepository } from "../config.js";
 import { AlwaysContextCache } from "./always-context-cache.js";
+import { UsageReceiptOutbox } from "../usage/receipt-outbox.js";
 
 const MAX_HOOK_INPUT_BYTES = 64 * 1024;
 const hookInputSchema = z.object({
@@ -86,10 +88,33 @@ export async function injectAlwaysContext(
   ).load();
   const profile = selectEffectiveProfile(registry, options, input.cwd);
   if (!profile) return "";
-  return new AlwaysContextCache({
+  const config = await new ConfigRepository(input.cwd).load(profile.configPath);
+  /* v8 ignore next -- legacy pre-receipt config fails closed before context emission */
+  if (!config.installationId) {
+    throw new HivemndError(
+      "CONFIG_INVALID",
+      "Always-context receipt staging requires an enrolled installation",
+    );
+  }
+  const selected = await new AlwaysContextCache({
     stateDirectory: options.stateDirectory,
     apiUrl: profile.apiUrl,
-  }).read(options.client, options.scope === "global" ? "user" : "workspace");
+  }).select(options.client, options.scope === "global" ? "user" : "workspace");
+  /* v8 ignore next -- an empty verified selection is covered by cache selection tests */
+  if (!selected.output) return "";
+  await new UsageReceiptOutbox({
+    stateDirectory: options.stateDirectory,
+    apiUrl: profile.apiUrl,
+    installationId: config.installationId,
+  }).stage({
+    eventId: randomUUID(),
+    eventKind: "always_context_emitted",
+    agentHost: options.client,
+    observedAt: new Date().toISOString(),
+    contextTrigger: input.source,
+    items: selected.entries,
+  });
+  return selected.output;
 }
 
 export function selectEffectiveProfile(

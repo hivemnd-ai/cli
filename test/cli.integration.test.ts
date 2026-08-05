@@ -1048,7 +1048,7 @@ describe("cached CLI update notice hook command", () => {
       ),
     ).resolves.toBe(0);
     const unsupportedMarker = noticeArguments(stateDirectory, "codex");
-    unsupportedMarker[unsupportedMarker.length - 1] = "2";
+    unsupportedMarker[unsupportedMarker.length - 1] = "3";
     await expect(
       submit(
         first.runtime,
@@ -1142,6 +1142,11 @@ describe("SessionStart context command", () => {
     };
     const cache = new AlwaysContextCache({ stateDirectory, apiUrl });
     await cache.apply(await cache.plan({ ...base, artifacts: [artifact] }));
+    await writeJson(join(stateDirectory, "config.json"), {
+      apiUrl,
+      installationId: "00000000-0000-4000-8000-000000000010",
+      destinations: [],
+    });
     await writeJson(join(stateDirectory, "registry.json"), {
       version: 1,
       profiles: [

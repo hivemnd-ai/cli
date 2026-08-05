@@ -107,6 +107,15 @@ export interface AlwaysContextCacheOptions {
   readonly apiUrl: string;
 }
 
+export interface AlwaysContextSelection {
+  readonly output: string;
+  readonly entries: readonly {
+    readonly artifactId: string;
+    readonly artifactVersionId: string;
+    readonly artifactKind: "embedded_document";
+  }[];
+}
+
 export class AlwaysContextCache {
   readonly root: string;
   private readonly organizationKey: string;
@@ -257,8 +266,18 @@ export class AlwaysContextCache {
   }
 
   async read(client: AgentKind, scope: InstallScope = "user"): Promise<string> {
+    return (await this.select(client, scope)).output;
+  }
+
+  async select(
+    client: AgentKind,
+    scope: InstallScope = "user",
+  ): Promise<AlwaysContextSelection> {
     const manifest = await this.readCurrentOptional();
-    if (!manifest) return "";
+    if (!manifest) return { output: "", entries: [] };
+    const entries = manifest.entries.filter((entry) =>
+      cacheEntryMatches(manifest, entry, client, scope),
+    );
     const bodies = await this.readManifestContent(manifest, client, scope);
     const output =
       manifest.version === 1 ? renderLegacyBodies(bodies) : bodies.join("\n");
@@ -272,7 +291,14 @@ export class AlwaysContextCache {
         `Always-context output exceeds the ${limit}-byte limit`,
       );
     }
-    return output;
+    return {
+      output,
+      entries: entries.map((entry) => ({
+        artifactId: entry.logicalId,
+        artifactVersionId: entry.artifactVersionId,
+        artifactKind: "embedded_document" as const,
+      })),
+    };
   }
 
   private async readCurrentOptional(): Promise<

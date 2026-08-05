@@ -283,6 +283,7 @@ describe("HTTP API adapter", () => {
               organization: { name: "Eigen", slug: "eigen" },
               enabled_clients: ["codex", "claude"],
               installation: {
+                id: "70000000-0000-4000-8000-000000000099",
                 client_version: "0.4.0",
                 capability_keys: ["read_artifacts"],
                 last_client_sequence: 8,
@@ -322,6 +323,7 @@ describe("HTTP API adapter", () => {
       organization: { name: "Eigen", slug: "eigen" },
       enabledClients: ["codex", "claude"],
       installation: {
+        id: "70000000-0000-4000-8000-000000000099",
         clientVersion: "0.4.0",
         capabilityKeys: ["read_artifacts"],
         lastClientSequence: 8,
@@ -360,6 +362,37 @@ describe("HTTP API adapter", () => {
       }),
     ).resolves.toBeUndefined();
     await expect(
+      client.usageReceipt("bearer", {
+        eventId: "70000000-0000-4000-8000-000000000020",
+        eventKind: "skill_activated",
+        agentHost: "claude",
+        observedAt: "2026-08-05T12:01:00.000Z",
+        items: [
+          {
+            artifactId: "70000000-0000-4000-8000-000000000021",
+            artifactVersionId: "70000000-0000-4000-8000-000000000022",
+            artifactKind: "skill",
+          },
+        ],
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      client.usageReceipt("bearer", {
+        eventId: "70000000-0000-4000-8000-000000000010",
+        eventKind: "always_context_emitted",
+        agentHost: "codex",
+        observedAt: "2026-08-05T12:00:00.000Z",
+        contextTrigger: "startup",
+        items: [
+          {
+            artifactId: "70000000-0000-4000-8000-000000000011",
+            artifactVersionId: "70000000-0000-4000-8000-000000000012",
+            artifactKind: "embedded_document",
+          },
+        ],
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
       client.receipt("bearer", {
         idempotencyKey: "70000000-0000-4000-8000-000000000001",
         clientSequence: 9,
@@ -392,6 +425,8 @@ describe("HTTP API adapter", () => {
       { path: "/api/v1/artifact-versions/version-1/content", method: "GET" },
       { path: "/api/v1/enrollments/exchange", method: "POST" },
       { path: "/api/v1/sync/receipts", method: "POST" },
+      { path: "/api/v1/context-usage-receipts", method: "POST" },
+      { path: "/api/v1/context-usage-receipts", method: "POST" },
       { path: "/api/v1/sync/receipts", method: "POST" },
     ]);
     expect(JSON.parse(requests[1]!.body)).toEqual({
@@ -405,6 +440,33 @@ describe("HTTP API adapter", () => {
     });
     expect(requests[5]!.body).toContain('"idempotency_key":"receipt-1"');
     expect(JSON.parse(requests[6]!.body)).toEqual({
+      idempotency_key: "70000000-0000-4000-8000-000000000020",
+      event_kind: "skill_activated",
+      agent_host: "claude",
+      occurred_at: "2026-08-05T12:01:00.000Z",
+      items: [
+        {
+          artifact_id: "70000000-0000-4000-8000-000000000021",
+          artifact_version_id: "70000000-0000-4000-8000-000000000022",
+          artifact_kind: "skill",
+        },
+      ],
+    });
+    expect(JSON.parse(requests[7]!.body)).toEqual({
+      idempotency_key: "70000000-0000-4000-8000-000000000010",
+      event_kind: "always_context_emitted",
+      agent_host: "codex",
+      occurred_at: "2026-08-05T12:00:00.000Z",
+      context_trigger: "startup",
+      items: [
+        {
+          artifact_id: "70000000-0000-4000-8000-000000000011",
+          artifact_version_id: "70000000-0000-4000-8000-000000000012",
+          artifact_kind: "embedded_document",
+        },
+      ],
+    });
+    expect(JSON.parse(requests[8]!.body)).toEqual({
       idempotency_key: "70000000-0000-4000-8000-000000000001",
       client_sequence: 9,
       release_id: "70000000-0000-4000-8000-000000000002",

@@ -36,7 +36,23 @@ export interface DestinationConfig {
 
 export interface HivemndConfig {
   readonly apiUrl: string;
+  readonly installationId?: string;
   readonly destinations: readonly DestinationConfig[];
+}
+
+export interface ContextUsageReceiptItem {
+  readonly artifactId: string;
+  readonly artifactVersionId: string;
+  readonly artifactKind: "embedded_document" | "skill";
+}
+
+export interface ContextUsageReceipt {
+  readonly eventId: string;
+  readonly eventKind: "always_context_emitted" | "skill_activated";
+  readonly agentHost: AgentKind;
+  readonly observedAt: string;
+  readonly contextTrigger?: "startup" | "resume" | "clear" | "compact";
+  readonly items: readonly ContextUsageReceiptItem[];
 }
 
 export interface ClientConfiguration {
@@ -44,6 +60,7 @@ export interface ClientConfiguration {
   readonly enabledClients: readonly AgentKind[];
   readonly installation?:
     | {
+        readonly id?: string;
         readonly clientVersion: string;
         readonly capabilityKeys: readonly string[];
         readonly lastClientSequence?: number | null;
@@ -295,6 +312,7 @@ export interface ApiClient {
   inspectSourceSchema(token: string, sourceId: string): Promise<SourceSchema>;
   download(token: string, artifact: ManifestArtifact): Promise<Uint8Array>;
   receipt(token: string, receipt: SyncReceipt): Promise<void>;
+  usageReceipt?(token: string, receipt: ContextUsageReceipt): Promise<void>;
 }
 
 export interface AgentAdapter {

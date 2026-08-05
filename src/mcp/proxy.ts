@@ -1,6 +1,7 @@
 import { StringDecoder } from "node:string_decoder";
 import type { Readable, Writable } from "node:stream";
 import { HivemndError } from "../errors.js";
+import type { AgentKind } from "../domain.js";
 import { resolveTenantUrl, tenantBaseUrl } from "../tenant-url.js";
 import {
   clientRuntimeHeaders,
@@ -18,6 +19,7 @@ export interface McpHttpProxyOptions {
   readonly maxResponseBytes?: number;
   readonly clientVersion?: string;
   readonly clientFeatures?: readonly string[];
+  readonly agentHost: AgentKind;
 }
 
 export interface StdioProxyStreams {
@@ -37,6 +39,7 @@ export class McpHttpProxy {
   private readonly timeoutMs: number;
   private readonly maxResponseBytes: number;
   private readonly runtimeMetadata?: ClientRuntimeMetadata;
+  private readonly agentHost: AgentKind;
 
   constructor(options: McpHttpProxyOptions) {
     if (!options.token.trim()) {
@@ -50,6 +53,7 @@ export class McpHttpProxy {
     this.fetcher = options.fetcher ?? fetch;
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.maxResponseBytes = options.maxResponseBytes ?? 1_048_576;
+    this.agentHost = options.agentHost;
     if (options.clientVersion || options.clientFeatures) {
       this.runtimeMetadata = {
         clientVersion: options.clientVersion ?? "",
@@ -84,6 +88,7 @@ export class McpHttpProxy {
           accept: "application/json",
           authorization: `Bearer ${this.token}`,
           "content-type": "application/json",
+          "X-Hivemnd-Agent-Host": this.agentHost,
           ...clientRuntimeHeaders(this.runtimeMetadata),
         },
         body: JSON.stringify(message),

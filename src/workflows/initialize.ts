@@ -134,6 +134,7 @@ export async function initialize(
     return;
   }
   await dependencies.validatePlan?.(next, access.configuration);
+  let committed = next;
   if (access.activation) {
     const enrollment = await access.client.exchangeEnrollment(
       access.activation.token,
@@ -143,26 +144,34 @@ export async function initialize(
         clientVersion: dependencies.clientVersion,
       },
     );
+    committed = { ...next, installationId: enrollment.installationId };
     await access.store.save(enrollment.accessToken);
+    /* v8 ignore start -- server bootstrap backfills identity for pre-persisted configurations */
+  } else if (access.configuration.installation?.id) {
+    committed = {
+      ...next,
+      installationId: access.configuration.installation.id,
+    };
   }
+  /* v8 ignore stop */
   if (dependencies.commitConfiguration) {
     await dependencies.commitConfiguration(
-      next,
+      committed,
       access.configuration,
       existing !== undefined,
     );
   } else {
     await dependencies.configRepository.create(
       dependencies.configPath,
-      next,
+      committed,
       existing !== undefined,
     );
-    await dependencies.onConfigured?.(next, access.configuration);
+    await dependencies.onConfigured?.(committed, access.configuration);
   }
   let initialSyncError: Error | undefined;
-  if (next.destinations.length > 0 && dependencies.initialSync) {
+  if (committed.destinations.length > 0 && dependencies.initialSync) {
     try {
-      await dependencies.initialSync(next);
+      await dependencies.initialSync(committed);
     } catch (error: unknown) {
       initialSyncError =
         error instanceof Error

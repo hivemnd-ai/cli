@@ -18,10 +18,12 @@ export async function authenticate(
     );
   }
   const { dependencies } = context;
-  const config = await context.loadConfigured();
+  const resolved = await context.resolveConfigured();
+  const config = resolved.config;
   const client = dependencies.apiClientFactory(config);
   const store = dependencies.tokenStoreFactory(config);
   let token = options.token ?? dependencies.environment.HIVEMND_TOKEN;
+  let installationId: string | undefined;
   let installation = "token authentication";
   if (options.enrollmentUrl) {
     const enrollmentToken = parseEnrollmentUrl(
@@ -34,6 +36,7 @@ export async function authenticate(
       clientVersion: dependencies.clientVersion,
     });
     token = result.accessToken;
+    installationId = result.installationId;
     installation = `installation ${result.installationId}`;
   }
   if (!token) {
@@ -43,6 +46,11 @@ export async function authenticate(
     );
   }
   await client.manifest(token);
+  if (installationId) {
+    await dependencies
+      .configRepositoryFactory(dependencies.cwd)
+      .create(resolved.configPath, { ...config, installationId }, true);
+  }
   await store.save(token);
   dependencies.output.write(
     `authenticated: ${installation}; token stored in OS keychain`,

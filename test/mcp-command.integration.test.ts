@@ -44,10 +44,17 @@ describe("MCP command workflows", () => {
         input,
         protocolOutput,
         diagnostics,
-        fetcher: async () =>
-          new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }), {
-            status: 200,
-          }),
+        fetcher: async (_input, init) => {
+          expect(init?.headers).toMatchObject({
+            "X-Hivemnd-Agent-Host": "codex",
+          });
+          return new Response(
+            JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }),
+            {
+              status: 200,
+            },
+          );
+        },
       },
     );
     input.end('{"jsonrpc":"2.0","id":1,"method":"initialize"}\n');
@@ -74,6 +81,9 @@ describe("MCP command workflows", () => {
         registrationState: async () => "installed",
         fetcher: async (_input, init) => {
           expect(init?.body).not.toContain("secret-token");
+          expect(init?.headers).toMatchObject({
+            "X-Hivemnd-Agent-Host": "claude",
+          });
           return new Response(
             JSON.stringify({
               jsonrpc: "2.0",
