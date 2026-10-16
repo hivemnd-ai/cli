@@ -5,6 +5,15 @@ import { isWithinTenant, tenantBaseUrl } from "../tenant-url.js";
 import { clientRuntimeHeaders } from "../client/runtime-contract.js";
 import { clientTechnicalFeatures } from "../client/runtime-contract.js";
 
+const opaqueAuthorization = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+const authorizationError = z.enum([
+  "invalid_request",
+  "forbidden",
+  "authorization_invalid",
+  "authorization_expired",
+  "authorization_denied",
+  "authorization_unavailable",
+]);
 const uuid = z.uuid();
 const count = z.number().int().nonnegative();
 const text = z.string().max(4096);
@@ -214,8 +223,17 @@ export class MarketplaceApiClient {
     private readonly clientVersion: string,
     private readonly fetcher: typeof fetch = fetch,
     private readonly maximumResponseBytes = defaultMarketplaceLimits.response_bytes,
+    private readonly authorizationToken?: string,
   ) {
     this.baseUrl = tenantBaseUrl(apiUrl);
+    if (
+      authorizationToken !== undefined &&
+      !opaqueAuthorization.safeParse(authorizationToken).success
+    )
+      throw new HivemndError(
+        "CONFIG_INVALID",
+        "Invalid temporary marketplace authorization",
+      );
     if (
       !Number.isSafeInteger(maximumResponseBytes) ||
       maximumResponseBytes < 1
@@ -225,6 +243,79 @@ export class MarketplaceApiClient {
         "Marketplace response capacity must be positive",
       );
     }
+  }
+
+  async startAuthorization(token: string, challenge: string) {
+    this.authorizationValue(challenge);
+    const schema = z
+      .object({
+        ...envelope,
+        authorization_id: opaqueAuthorization,
+        verification_uri: z.url(),
+        expires_at: z.iso.datetime(),
+        poll_interval_seconds: z.literal(2),
+      })
+      .strict();
+    const result = await this.request(token, "authorizations", "POST", schema, {
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+    });
+    const expected = new URL(
+      `marketplace/authorizations/${result.authorization_id}`,
+      this.baseUrl,
+    );
+    if (result.verification_uri !== expected.href)
+      throw new HivemndError(
+        "PATH_UNSAFE",
+        "Marketplace verification URI differs from the configured tenant handoff",
+      );
+    return result;
+  }
+  async exchangeAuthorization(token: string, id: string, verifier: string) {
+    this.authorizationValue(id);
+    if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier))
+      throw new HivemndError("CONFIG_INVALID", "Invalid PKCE verifier");
+    const schema = z.discriminatedUnion("status", [
+      z
+        .object({
+          ...envelope,
+          status: z.literal("pending"),
+          expires_at: z.iso.datetime(),
+          poll_interval_seconds: z.literal(2),
+        })
+        .strict(),
+      z
+        .object({
+          ...envelope,
+          status: z.literal("authorized"),
+          authorization_token: opaqueAuthorization,
+          expires_at: z.iso.datetime(),
+        })
+        .strict(),
+    ]);
+    return await this.request(
+      token,
+      `authorizations/${id}/exchange`,
+      "POST",
+      schema,
+      { code_verifier: verifier },
+    );
+  }
+  async revokeAuthorization(token: string): Promise<void> {
+    const response = await this.response(token, "authorization", "DELETE");
+    await response.body?.cancel();
+    if (response.status !== 204)
+      throw new HivemndError(
+        "MANIFEST_INVALID",
+        "Invalid marketplace revocation response",
+      );
+  }
+  private authorizationValue(value: string): void {
+    if (!opaqueAuthorization.safeParse(value).success)
+      throw new HivemndError(
+        "CONFIG_INVALID",
+        "Invalid marketplace authorization identifier or challenge",
+      );
   }
 
   async registrations(token: string): Promise<MarketplaceRegistration[]> {
@@ -402,46 +493,7 @@ export class MarketplaceApiClient {
     body?: Readonly<Record<string, unknown>>,
   ): Promise<T> {
     try {
-      const url = new URL(`api/v1/marketplace/${path}`, this.baseUrl);
-      const response = await this.fetcher(url, {
-        method,
-        redirect: "error",
-        signal: AbortSignal.timeout(15_000),
-        headers: {
-          accept: "application/json",
-          authorization: `Bearer ${token}`,
-          ...clientRuntimeHeaders({
-            clientVersion: this.clientVersion,
-            clientFeatures: clientTechnicalFeatures,
-          }),
-          ...(body === undefined ? {} : { "content-type": "application/json" }),
-        },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      });
-      if (
-        response.url &&
-        !isWithinTenant(new URL(response.url), this.baseUrl)
-      ) {
-        throw new HivemndError(
-          "PATH_UNSAFE",
-          "Marketplace response left the configured tenant",
-        );
-      }
-      if (!response.ok) {
-        await response.body?.cancel();
-        const code =
-          response.status === 401
-            ? "AUTH_MISSING"
-            : response.status === 409
-              ? "SYNC_CONFLICT"
-              : "HTTP_FAILED";
-        throw new HivemndError(
-          code,
-          response.status === 403
-            ? "Marketplace access denied; private sources require verified GitHub authorization"
-            : `Marketplace API request failed (${response.status})`,
-        );
-      }
+      const response = await this.response(token, path, method, body);
       const value = schema.safeParse(
         JSON.parse(await this.readBounded(response)) as unknown,
       );
@@ -460,6 +512,88 @@ export class MarketplaceApiClient {
         );
       }
       return value.data;
+    } catch (error: unknown) {
+      if (error instanceof HivemndError) throw error;
+      throw new HivemndError(
+        "HTTP_FAILED",
+        "Marketplace API request unavailable",
+        { cause: error },
+      );
+    }
+  }
+
+  private async response(
+    token: string,
+    path: string,
+    method: "GET" | "POST" | "PATCH" | "DELETE",
+    body?: Readonly<Record<string, unknown>>,
+  ): Promise<Response> {
+    try {
+      const url = new URL(`api/v1/marketplace/${path}`, this.baseUrl);
+      const response = await this.fetcher(url, {
+        method,
+        redirect: "error",
+        signal: AbortSignal.timeout(15_000),
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${token}`,
+          ...clientRuntimeHeaders({
+            clientVersion: this.clientVersion,
+            clientFeatures: clientTechnicalFeatures,
+          }),
+          ...(body === undefined ? {} : { "content-type": "application/json" }),
+          ...(this.authorizationToken === undefined
+            ? {}
+            : {
+                "x-hivemnd-marketplace-authorization": this.authorizationToken,
+              }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      if (
+        response.url &&
+        !isWithinTenant(new URL(response.url), this.baseUrl)
+      ) {
+        throw new HivemndError(
+          "PATH_UNSAFE",
+          "Marketplace response left the configured tenant",
+        );
+      }
+      if (!response.ok) {
+        if (path.startsWith("authorizations")) {
+          let reason: string | undefined;
+          try {
+            const parsed = z
+              .object({ ...envelope, error: authorizationError })
+              .strict()
+              .safeParse(
+                JSON.parse(await this.readBounded(response)) as unknown,
+              );
+            if (parsed.success) reason = parsed.data.error;
+          } catch {
+            /* Raw provider and server errors never become CLI messages. */
+          }
+          if (reason)
+            throw new HivemndError(
+              "HTTP_FAILED",
+              `Marketplace authorization failed: ${reason}`,
+            );
+        }
+        await response.body?.cancel();
+        const code =
+          response.status === 401
+            ? "AUTH_MISSING"
+            : response.status === 409
+              ? "SYNC_CONFLICT"
+              : "HTTP_FAILED";
+        throw new HivemndError(
+          code,
+          response.status === 403
+            ? "Marketplace access denied; private sources require verified GitHub authorization"
+            : `Marketplace API request failed (${response.status})`,
+        );
+      }
+      return response;
     } catch (error: unknown) {
       if (error instanceof HivemndError) throw error;
       throw new HivemndError(
@@ -506,6 +640,7 @@ export class MarketplaceApiClient {
       );
     } finally {
       await reader.cancel();
+      reader.releaseLock();
     }
   }
 }

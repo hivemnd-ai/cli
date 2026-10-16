@@ -60,6 +60,34 @@ export function registerMarketplaceCommands(
       );
     });
   marketplace
+    .command("authorize")
+    .description(
+      "link temporary private GitHub access through explicit browser approval",
+    )
+    .option("--dry-run")
+    .option(
+      "--apply",
+      "store only an expiring opaque authorization after browser approval",
+    )
+    .action((options: MarketplaceCommandOptions) =>
+      runMarketplaceCommand(context, "authorize", undefined, options),
+    );
+  marketplace
+    .command("revoke-authorization")
+    .description(
+      "revoke the temporary private authorization and remove its owned local handle",
+    )
+    .option("--dry-run")
+    .option("--apply")
+    .action((options: MarketplaceCommandOptions) =>
+      runMarketplaceCommand(
+        context,
+        "revoke-authorization",
+        undefined,
+        options,
+      ),
+    );
+  marketplace
     .command("list")
     .description("list authorized marketplace registrations")
     .action(() => runMarketplaceCommand(context, "list", undefined, {}));
@@ -69,6 +97,10 @@ export function registerMarketplaceCommands(
     .requiredOption(
       "--repository-id <id>",
       "canonical numeric GitHub repository ID",
+    )
+    .option(
+      "--private-source <uuid>",
+      "existing authorized private Source UUID",
     )
     .requiredOption("--name <name>", "workspace registration name")
     .requiredOption("--format <format>", "agent-plugins or claude-marketplace")

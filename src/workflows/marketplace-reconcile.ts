@@ -1,7 +1,6 @@
 import { dirname, join } from "node:path";
 import type { AuthenticatedContext, CliContext } from "../cli/context.js";
 import {
-  MarketplaceApiClient,
   defaultMarketplaceLimits,
   type MarketplaceLimits,
 } from "../api/marketplace-api-client.js";
@@ -17,6 +16,7 @@ import {
   MarketplaceTargets,
   ensureMarketplaceDirectory,
 } from "./marketplace-targets.js";
+import { marketplaceApiClient } from "./marketplace-authorization.js";
 import { probeDeclaredHarness } from "../marketplace/harness-adapters.js";
 
 export interface MarketplaceSyncOptions {
@@ -76,10 +76,9 @@ async function synchronizeResolvedMarketplaces(
   }
   const session = authenticated ?? (await context.bootstrap(resolved.config));
   const limits = options.limits ?? defaultMarketplaceLimits;
-  const client = new MarketplaceApiClient(
-    resolved.config.apiUrl,
-    context.dependencies.clientVersion,
-    fetch,
+  const client = await marketplaceApiClient(
+    context,
+    resolved,
     limits.response_bytes,
   );
   const base = tenantBaseUrl(resolved.config.apiUrl);

@@ -543,11 +543,36 @@ automatic native lifecycle are unsupported. Materialization does not prove
 installation, loading, invocation or execution; those signals remain unknown.
 No package hooks, scripts, installers or MCP servers run while indexing or copying.
 
-Private repositories currently require the Portal's legitimate transient GitHub
-OAuth flow. The CLI bearer token does not supply that user authorization; private
-delivery fails closed. Server credentials are never forwarded to the CLI. This
-integration adds no package-use telemetry, captured prompts/private code or paid
-judges. Existing governed receipt semantics remain separate.
+Private repositories require a separate temporary user authorization. The CLI
+bearer identifies the enrolled installation and does not supply GitHub access:
+
+```sh
+hivemnd marketplace authorize --apply
+# Open the printed tenant URL and approve the request in the browser.
+hivemnd marketplace register --repository-id "$GITHUB_REPOSITORY_ID" \
+  --private-source "$AUTHORIZED_SOURCE_ID" --name "Private conventions" \
+  --format claude-marketplace --manifest-path .claude-plugin/marketplace.json \
+  --ref main --managed --apply
+# Refresh, declare, select and sync using the same commands shown above.
+hivemnd marketplace revoke-authorization --apply
+```
+
+Authorization uses a memory-only PKCE verifier and an explicit browser approval.
+The CLI stores only a private, expiring opaque Hivemnd handle scoped to the tenant,
+configuration and installation. GitHub credentials remain encrypted on the server.
+The handle is sent in an HTTP header, never printed or placed in configuration,
+URLs, argv or schedules. It expires within ten minutes and cannot extend the
+original GitHub approval window. `status` reports the temporary link and expiry;
+repository access is checked on every operation.
+
+Private reconciliation can refresh selected repositories only while that grant
+remains valid. Automatic sync never starts authorization; after expiry, run
+`authorize --apply` again. Authorization and revocation default to plans without
+credential lookup, network requests or writes. `--private-source` references an
+existing authorized Source UUID and does not create a Source or GitHub App.
+
+This integration adds no package-use telemetry, captured prompts/private code or
+paid judges. Existing governed receipt semantics remain separate.
 
 ## Local development: offline diagnostics (unpublished)
 

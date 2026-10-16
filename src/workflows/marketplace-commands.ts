@@ -2,7 +2,6 @@ import { join } from "node:path";
 import { z } from "zod";
 import type { CliContext } from "../cli/context.js";
 import {
-  MarketplaceApiClient,
   defaultMarketplaceLimits,
   type MarketplaceLimits,
 } from "../api/marketplace-api-client.js";
@@ -10,7 +9,15 @@ import { HivemndError } from "../errors.js";
 import { MarketplaceTargets } from "./marketplace-targets.js";
 import { synchronizeMarketplaces } from "./marketplace-reconcile.js";
 
+import {
+  marketplaceApiClient,
+  marketplaceAuthorizationStore,
+  runMarketplaceAuthorization,
+} from "./marketplace-authorization.js";
+
 export type MarketplaceCommand =
+  | "authorize"
+  | "revoke-authorization"
   | "list"
   | "register"
   | "update"
@@ -28,6 +35,7 @@ export interface MarketplaceCommandOptions {
   enabled?: boolean;
   disabled?: boolean;
   repositoryId?: string;
+  privateSource?: string;
   name?: string;
   format?: string;
   manifestPath?: string;
@@ -137,6 +145,10 @@ export async function runMarketplaceCommand(
   options: MarketplaceCommandOptions,
 ): Promise<void> {
   const limits = marketplaceLimits(options.limits);
+  if (command === "authorize" || command === "revoke-authorization") {
+    await runMarketplaceAuthorization(context, command, options);
+    return;
+  }
   if (options.apply && options.dryRun)
     return invalid("Use either --dry-run or --apply");
   if (id !== undefined && !z.uuid().safeParse(id).success)
@@ -159,7 +171,17 @@ export async function runMarketplaceCommand(
     const format = formats[required(options.format)];
     if (!format)
       return invalid("Choose format agent-plugins or claude-marketplace");
+    if (
+      options.privateSource !== undefined &&
+      !z.uuid().safeParse(options.privateSource).success
+    )
+      return invalid(
+        "Private marketplace source must be an authorized Source UUID",
+      );
     body = {
+      ...(options.privateSource === undefined
+        ? {}
+        : { private_source_id: options.privateSource }),
       provider_repository_id: integer(options.repositoryId, true),
       name: required(options.name),
       format,
@@ -257,10 +279,9 @@ export async function runMarketplaceCommand(
   }
   const resolved = await context.resolveConfigured({ readOnly: true });
   const session = await context.bootstrap(resolved.config);
-  const client = new MarketplaceApiClient(
-    resolved.config.apiUrl,
-    context.dependencies.clientVersion,
-    fetch,
+  const client = await marketplaceApiClient(
+    context,
+    resolved,
     limits.response_bytes,
   );
   switch (command) {
@@ -376,6 +397,18 @@ export async function runMarketplaceCommand(
       else
         output.write(
           JSON.stringify({
+            private_authorization: resolved.config.installationId
+              ? await marketplaceAuthorizationStore(context, resolved)
+                  .load()
+                  .then((value) =>
+                    value
+                      ? {
+                          status: "temporary_authorization_linked",
+                          expires_at: value.expiresAt,
+                        }
+                      : { status: "unavailable" },
+                  )
+              : { status: "unavailable" },
             targets: await client.targets(session.token.value),
             selections: await client.selections(session.token.value),
             session_availability: "unknown",
