@@ -1,4 +1,5 @@
 import type { AuthenticatedContext, CliContext } from "../cli/context.js";
+import { synchronizeMarketplaces } from "./marketplace-reconcile.js";
 import { asHivemndError, HivemndError } from "../errors.js";
 import { SyncApplier } from "../sync/applier.js";
 import { SyncPlanner } from "../sync/planner.js";
@@ -68,6 +69,11 @@ export async function synchronize(
   });
   await outbox.withLock(() =>
     synchronizeAuthenticated(options, context, authenticated, outbox),
+  );
+  await synchronizeMarketplaces(
+    context,
+    { apply: options.apply && !options.dryRun, automatic: true },
+    authenticated,
   );
 }
 

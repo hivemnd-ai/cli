@@ -656,8 +656,8 @@ it.each(["missing-nul", "wrong-oid-length", "wrong-size", "malformed"])(
 );
 it("refuses to return success when the overall deadline expires after the final blob read", async () => {
   const f = await fixture();
-  const last = (await f.read()).files.at(-1);
-  if (!last) throw new Error("fixture");
+  const expectedBlobReads = Object.keys(f.bodies).length;
+  let blobReads = 0;
   let finished = false;
   let afterRead = false;
   const original = plumbing.executeLocalGit;
@@ -672,9 +672,13 @@ it("refuses to return success when the overall deadline expires after the final 
   vi.spyOn(plumbing, "executeLocalGit").mockImplementation(
     async (file, args, options) => {
       const result = await original(file, args, options);
-      if (args.includes("blob") && args.includes(last.blobOid)) finished = true;
+      if (args.includes("blob")) {
+        blobReads += 1;
+        if (blobReads === expectedBlobReads) finished = true;
+      }
       return result;
     },
   );
   await expect(f.read()).rejects.toMatchObject({ code: "INTEGRITY_FAILED" });
+  expect(blobReads).toBe(expectedBlobReads);
 });

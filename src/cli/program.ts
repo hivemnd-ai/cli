@@ -75,7 +75,7 @@ export function createProgram(dependencies: RuntimeDependencies): Command {
     resolver: organizationResolver,
   });
   registerContextCommands(program, dependencies);
-  registerMarketplaceCommands(program, dependencies);
+  registerMarketplaceCommands(program, context);
 
   return program;
 }

@@ -491,6 +491,64 @@ Formats are intentionally separate. References:
 [Agent Plugins v1](https://agent-plugins.org/specification) and
 [Claude marketplaces](https://code.claude.com/docs/en/plugin-marketplaces).
 
+## Local development: marketplace API and owned bundles (unpublished)
+
+These commands require the matching marketplace backend and are not in the
+published npm 0.5.4 package. Configure the tenant API and enrolled installation
+first. For an authorized public repository, registration starts with an explicit
+format, manifest, ref and lifecycle mode:
+
+```sh
+hivemnd marketplace register --repository-id "$GITHUB_REPOSITORY_ID" \
+  --name "Engineering conventions" --format claude-marketplace \
+  --manifest-path .claude-plugin/marketplace.json --ref main --managed --apply
+hivemnd marketplace list
+hivemnd marketplace refresh "$REGISTRATION_ID" \
+  --expected-lock-version "$LOCK_VERSION" --apply
+hivemnd marketplace catalog "$REGISTRATION_ID"
+hivemnd marketplace declare --client claude --scope user --apply
+hivemnd marketplace select --registration "$REGISTRATION_ID" --plugin "$PLUGIN_KEY" \
+  --audience installation --target "$TARGET_ID" --client claude --scope user \
+  --enabled --apply
+hivemnd marketplace sync --apply
+```
+
+Set the variables from your repository identity and returned registration,
+catalog and target metadata. Without `--apply`, mutations produce a plan before
+credential lookup, network requests or writes. `update` and `refresh` require the
+current lock version. `--managed` and `--native` are mutually exclusive; native
+activation support is reported independently. Workspace targets require an opaque
+UUID `--binding`, and no workspace path is sent to the backend.
+
+Applying `declare` records private local consent for future automatic updates of
+that owned target. Normal `sync --all --apply` then reconciles those opted-in
+targets after governed-artifact synchronization succeeds. Without local consent,
+normal synchronization makes no marketplace requests. Public reconciliation asks
+the existing backend queue to refresh the source; `refresh_requested` means queue
+acceptance, not completion. A stale bundle triggers at most two rereads of the
+current plan. Each complete target inventory verifies before publication.
+
+Bundles live outside native discovery roots in private owner-specific stores.
+The CLI checks the complete inventory, exact binary bytes, Git IDs, SHA-256 and
+source executable metadata. Payload files remain 0600 and directories 0700;
+current/previous pointers and mutable runtime data are separate. New source
+versions need no repeated acknowledgement. Locally edited owned bytes fail
+closed; automatic drift repair and general native/managed ownership transitions
+are not implemented.
+
+For an explicitly declared Claude target, a bounded isolated help/version probe
+can produce a manual `--plugin-dir` launch plan for a compatible verified package.
+No session is started and no native settings are written. Codex activation and
+automatic native lifecycle are unsupported. Materialization does not prove
+installation, loading, invocation or execution; those signals remain unknown.
+No package hooks, scripts, installers or MCP servers run while indexing or copying.
+
+Private repositories currently require the Portal's legitimate transient GitHub
+OAuth flow. The CLI bearer token does not supply that user authorization; private
+delivery fails closed. Server credentials are never forwarded to the CLI. This
+integration adds no package-use telemetry, captured prompts/private code or paid
+judges. Existing governed receipt semantics remain separate.
+
 ## Local development: offline diagnostics (unpublished)
 
 The working branch adds `hivemnd doctor --offline`; it is **not in the published
@@ -530,8 +588,9 @@ change is required, and this command does not add skill-use detection or judges.
 
 ## Internal development: inert complete bundles (unpublished)
 
-`src/marketplace/bundle-store.ts` exports `materializeLocalBundle` for a future
-adapter. It has no CLI command or production endpoint and is not in npm 0.5.4.
+`src/marketplace/bundle-store.ts` exports the local `materializeLocalBundle`
+primitive. The API workflow above composes its verified byte-store companion;
+these primitives are not in npm 0.5.4.
 The caller supplies canonical absolute local source/store paths, an owner ID,
 a source commit SHA, the complete file inventory (`path`, byte size, SHA-256,
 `executable` intent), and explicit runtime limits for files, bytes, depth and
@@ -545,7 +604,7 @@ exclusion occurs. Empty directories and non-regular entries are rejected;
 symlinks, hardlinks, traversal, case-colliding prefixes and incomplete inventories fail.
 The source executable intent is checked and retained in the descriptor, while
 stored files are deliberately 0600 and directories 0700. This inert copy is not
-ready for direct execution; a future harness adapter owns runtime permissions.
+ready for direct execution; native execution requires a separate supported harness lifecycle.
 
 The private store must be outside agent discovery directories. Known `.agents`,
 `.claude` and `.codex` paths are rejected; the caller must also exclude any custom
@@ -566,11 +625,11 @@ UTF-8 byte ordering (`Buffer.compare`). It includes owner and commit, so the sam
 bytes from a new commit produce another store version. It is not the proposed
 backend `tree_sha256_v1` package hash or a cross-runtime canonical encoding.
 
-There is no current pointer, native install, registration, session discovery,
-enabling, reconciliation, garbage collection, script/hook/MCP execution, network,
-credential access, receipt, or usage claim. Future integration still needs
-remote provenance/access resolution, custom discovery boundaries, native/managed ownership and
-recovery rules, and harness lifecycle adapters. Filesystem checks detect unsafe
+This primitive itself owns no current pointer, registration, native settings,
+garbage collection, network or credentials. The composed marketplace workflow
+adds authenticated transport, managed reconciliation and recoverable pointers;
+native/managed ownership transitions and native activation remain incomplete.
+Neither layer claims observed use or executes package hooks/MCP. Filesystem checks detect unsafe
 state and ordinary concurrent changes; this is not a sandbox against another
 process running as the same OS user. Atomic rename supplies visibility, not a
 power-loss durability guarantee.
@@ -617,5 +676,6 @@ root, tree OID and blob OIDs are returned for a future registration adapter.
 
 This proves membership in the supplied local commit, not a signature, trusted
 publisher, remote ref, GitHub installation authority or repository ACL. Remote
-resolution/access and native agent lifecycle integration remain pending. No
-public command, database change, remote download or production E2E is added.
+resolution/access belongs to the backend API workflow described above; native
+agent lifecycle and deployed end-to-end proof remain incomplete. This local Git
+primitive itself adds no database change, remote download or usage claim.
