@@ -576,8 +576,8 @@ paid judges. Existing governed receipt semantics remain separate.
 
 ## Local development: offline diagnostics (unpublished)
 
-The working branch adds `hivemnd doctor --offline`; it is **not in the published
-npm 0.5.4 package**, even though this branch still reports that version.
+The 0.6.0 release candidate adds `hivemnd doctor --offline`; it is **not in the
+published npm 0.5.4 package**.
 
 ```sh
 hivemnd doctor --offline
