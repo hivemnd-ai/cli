@@ -128,7 +128,9 @@ async function write(path: string, content: string | Buffer): Promise<void> {
     await handle.close();
   }
 }
-function inventory(input: LocalBundleInput): BundleFile[] {
+export function normalizeBundleInventory(
+  input: Pick<LocalBundleInput, "ownerId" | "commitSha" | "files" | "limits">,
+): BundleFile[] {
   const { files, limits } = input;
   if (
     !/^[a-zA-Z0-9_-]{1,128}$/.test(input.ownerId) ||
@@ -268,18 +270,70 @@ async function verify(
 export async function materializeLocalBundle(
   input: LocalBundleInput,
 ): Promise<StoredBundle> {
-  const files = inventory(input);
-  const { sourceDirectory, storeDirectory, limits } = input;
-  await ancestry(sourceDirectory);
+  const files = normalizeBundleInventory(input);
+  await ancestry(input.sourceDirectory);
+  if (
+    !relative(input.sourceDirectory, input.storeDirectory).startsWith("../") ||
+    !relative(input.storeDirectory, input.sourceDirectory).startsWith("../")
+  )
+    unsafe();
+  return publish(
+    input,
+    files,
+    async (staging) =>
+      verify(
+        input.sourceDirectory,
+        files,
+        input.limits,
+        join(staging, "payload"),
+      ),
+    async () => ancestry(input.sourceDirectory),
+  );
+}
+export interface BundleBytesInput extends Omit<
+  LocalBundleInput,
+  "sourceDirectory" | "files"
+> {
+  files: readonly (BundleFile & { content: Uint8Array })[];
+}
+/** Internal byte transport; content must match the complete supplied inventory. */
+export async function materializeBundleBytes(
+  input: BundleBytesInput,
+): Promise<StoredBundle> {
+  const files = normalizeBundleInventory(input);
+  const contents = input.files.map((file) => {
+    if (file.content.byteLength !== file.size) integrity();
+    const content = Buffer.from(file.content);
+    if (sha256(content) !== file.sha256) integrity();
+    return { path: file.path, content };
+  });
+  return publish(
+    input,
+    files,
+    async (staging) => {
+      for (const file of contents) {
+        const path = join(staging, "payload", file.path);
+        await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+        await write(path, file.content);
+      }
+    },
+    () => Promise.resolve(),
+  );
+}
+async function publish(
+  input: Omit<LocalBundleInput, "sourceDirectory">,
+  files: BundleFile[],
+  prepare: (staging: string) => Promise<void>,
+  boundary: () => Promise<void>,
+): Promise<StoredBundle> {
+  const { storeDirectory, limits } = input;
   await ancestry(dirname(storeDirectory));
   if (
     !isAbsolute(storeDirectory) ||
     resolve(storeDirectory) !== storeDirectory ||
     storeDirectory
       .split("/")
-      .some((part) => [".agents", ".claude", ".codex"].includes(part)) ||
-    !relative(sourceDirectory, storeDirectory).startsWith("../") ||
-    !relative(storeDirectory, sourceDirectory).startsWith("../")
+      .some((part) => [".agents", ".claude", ".codex"].includes(part))
   )
     unsafe();
   const owner = JSON.stringify({ schemaVersion: 1, ownerId: input.ownerId });
@@ -354,10 +408,10 @@ export async function materializeLocalBundle(
     }
     staging = await mkdtemp(join(storeDirectory, ".stage-"));
     await mkdir(join(staging, "payload"), { mode: 0o700 });
-    await verify(sourceDirectory, files, limits, join(staging, "payload"));
+    await prepare(staging);
     await write(join(staging, "snapshot.json"), snapshot);
     await verify(join(staging, "payload"), files, limits);
-    await ancestry(sourceDirectory);
+    await boundary();
     await privateDirectory(storeDirectory);
     await privateDirectory(versions);
     await rename(staging, join(versions, digest));

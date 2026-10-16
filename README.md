@@ -568,9 +568,54 @@ backend `tree_sha256_v1` package hash or a cross-runtime canonical encoding.
 
 There is no current pointer, native install, registration, session discovery,
 enabling, reconciliation, garbage collection, script/hook/MCP execution, network,
-credential access, receipt, or usage claim. Future integration still needs a
-provenance resolver, custom discovery boundaries, native/managed ownership and
+credential access, receipt, or usage claim. Future integration still needs
+remote provenance/access resolution, custom discovery boundaries, native/managed ownership and
 recovery rules, and harness lifecycle adapters. Filesystem checks detect unsafe
 state and ordinary concurrent changes; this is not a sandbox against another
 process running as the same OS user. Atomic rename supplies visibility, not a
 power-loss durability guarantee.
+
+### Local committed Git provenance (internal, unpublished)
+
+`readCommittedGitBundle` in `src/marketplace/git-bundle.ts` accepts a local
+repository directory, a full 40/64-character commit object ID, literal
+`packageRoot` (`.` for the committed repository root), and caller limits. It
+returns the exact commit/package root/tree OID plus complete file entries with
+raw binary bytes, byte size, SHA-256, Git blob OID, Git mode and executable intent.
+Untracked, modified or deleted working-tree files do not affect this inventory.
+
+The reader uses only `cat-file` and NUL-delimited `ls-tree`. It checks the actual
+object type before reading, so annotated tags cannot masquerade as commits. It
+recomputes Git object IDs from the object type, byte length and raw bytes, and
+verifies the commit/tree chain for each literal package-root segment, the package
+tree, descendant trees and blobs. It rejects unsupported modes, symlinks,
+gitlinks, unsafe/colliding paths, empty directories, corrupt/missing objects and
+incomplete or inconsistent plumbing output. These are transport/provenance
+checks; they do not validate every plugin's component schemas or make its code
+safe to execute.
+
+The shared local Git policy strips inherited `GIT_*` overrides, disables lazy
+fetch and replacement objects, allows no transport protocol, disables hooks and
+fsmonitor, and ignores system/global Git configuration. No checkout, status,
+diff, filters, textconv, fetch or script/MCP invocation occurs. Git failures
+produce a generic error without stderr, author identity, source bytes or paths.
+
+`maxOutputBytes` bounds aggregate subprocess stdout plus stderr, including raw
+object bodies and repeated tree metadata. It is separate from the package's
+file/total-byte budgets. `maxDurationMs` bounds the reader's overall elapsed
+budget with remaining-time process deadlines and SIGKILL on process timeout;
+CPU work and OS I/O are not a hard real-time sandbox. File/depth/entry limits
+remain caller decisions. Git itself must be a trusted local runtime.
+
+`materializeCommittedGitBundle` connects this verified inventory directly to
+`materializeBundleBytes`, using the same private atomic store. It refuses a store
+inside or containing the source repository and never creates an executable
+export of committed scripts. It returns provenance metadata without content
+buffers plus the inert stored path/digest. The existing store descriptor format
+is unchanged: commit, owner and normalized file inventory are persisted; package
+root, tree OID and blob OIDs are returned for a future registration adapter.
+
+This proves membership in the supplied local commit, not a signature, trusted
+publisher, remote ref, GitHub installation authority or repository ACL. Remote
+resolution/access and native agent lifecycle integration remain pending. No
+public command, database change, remote download or production E2E is added.

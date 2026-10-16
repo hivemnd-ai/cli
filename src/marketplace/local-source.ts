@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
-import { lstat, open, readdir, realpath } from "node:fs/promises";
+import { lstat, open, readdir } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify, TextDecoder } from "node:util";
 import { parseTree, type Node, type ParseError } from "jsonc-parser";
 import { HivemndError } from "../errors.js";
 import { sha256 } from "../sync/hash.js";
+import { localGitContext } from "./local-git.js";
 import type { ManifestSnapshot, PreviewLimits } from "./types.js";
 
 const git = promisify(execFile);
@@ -48,25 +49,8 @@ export class LocalSource {
       )
     )
       invalid("Invalid inventory limits");
-    const canonical = await realpath(root);
-    const environment = Object.fromEntries(
-      Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")),
-    );
-    environment.GIT_NO_LAZY_FETCH = "1";
-    environment.GIT_NO_REPLACE_OBJECTS = "1";
-    environment.GIT_ALLOW_PROTOCOL = "";
-    environment.GIT_TERMINAL_PROMPT = "0";
+    const { root: canonical, args, environment } = await localGitContext(root);
     const options = { env: environment, timeout: 10_000, maxBuffer: 1_048_576 };
-    const args = [
-      "--no-optional-locks",
-      "--literal-pathspecs",
-      "-c",
-      "core.fsmonitor=false",
-      "-c",
-      "core.hooksPath=/dev/null",
-      "-C",
-      canonical,
-    ];
     try {
       const { stdout } = await git(
         "git",
