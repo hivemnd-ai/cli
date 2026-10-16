@@ -20,6 +20,6 @@ export async function runProgram(
     }
     const failure = asHivemndError(error);
     output.error(`[${failure.code}] ${failure.message}`);
-    return 1;
+    return failure.code === "SKILL_RECEIPT_REQUIRED" ? 2 : 1;
   }
 }

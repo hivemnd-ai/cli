@@ -1,6 +1,6 @@
 {
   "name": "@hivemnd-ai/cli",
-  "version": "0.5.4",
+  "version": "0.6.0",
   "description": "Securely synchronize Hivemnd artifacts with local AI coding agents.",
   "repository": {
     "type": "git",
@@ -40,13 +40,13 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.10.0",
-    "@vitest/coverage-v8": "^4.1.10",
+    "@vitest/coverage-v8": "^4.1.12",
     "eslint": "^10.0.0",
     "eslint-config-prettier": "^10.1.8",
     "prettier": "^3.9.0",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.65.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.12"
   },
   "license": "UNLICENSED",
   "publishConfig": {

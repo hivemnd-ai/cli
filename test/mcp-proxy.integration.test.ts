@@ -1,6 +1,19 @@
 import { PassThrough, Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import { McpHttpProxy, runStdioProxy } from "../src/mcp/proxy.js";
+import {
+  McpHttpProxy as ProductionMcpHttpProxy,
+  runStdioProxy,
+  type McpHttpProxyOptions,
+} from "../src/mcp/proxy.js";
+
+class McpHttpProxy extends ProductionMcpHttpProxy {
+  constructor(
+    options: Omit<McpHttpProxyOptions, "agentHost"> &
+      Partial<Pick<McpHttpProxyOptions, "agentHost">>,
+  ) {
+    super({ agentHost: "codex", ...options });
+  }
+}
 
 describe("MCP stdio proxy", () => {
   it("forwards expanded documentation instructions, catalog schemas, and mutation outcomes without client policy", async () => {
@@ -174,6 +187,7 @@ describe("MCP stdio proxy", () => {
       "content-type": "application/json",
       "Hivemnd-Client-Features": "exact-delivery-targets-v1",
       "Hivemnd-Client-Version": "0.4.0",
+      "X-Hivemnd-Agent-Host": "codex",
     });
     expect(requests[0]?.init?.body).not.toContain("secret-token");
     expect(requests[0]?.init?.body).toBe(

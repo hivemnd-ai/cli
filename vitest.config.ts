@@ -2,6 +2,8 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    // Git provenance fixtures launch bounded subprocesses; avoid coverage pool contention.
+    maxWorkers: 1,
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],

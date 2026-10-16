@@ -31,6 +31,7 @@ import {
 import { SyncApplier } from "../src/sync/applier.js";
 import { SyncPlanner } from "../src/sync/planner.js";
 import { profileKey } from "../src/organizations/registry.js";
+import { UsageReceiptOutbox } from "../src/usage/receipt-outbox.js";
 import {
   bytes,
   hash,
@@ -40,6 +41,7 @@ import {
 } from "./helpers.js";
 
 const cleanups: Array<() => Promise<void>> = [];
+const installationId = "00000000-0000-4000-8000-000000000010";
 
 afterEach(async () => {
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
@@ -551,6 +553,13 @@ describe("primary-session injection", () => {
       await eigen.plan(contextManifest("# EIGEN\n", ["codex"])),
     );
     await acme.apply(await acme.plan(contextManifest("# ACME\n", ["claude"])));
+    for (const apiUrl of [eigenUrl, acmeUrl]) {
+      await writeJson(profile("tenant", apiUrl, stateDirectory).configPath, {
+        apiUrl,
+        installationId,
+        destinations: [],
+      });
+    }
     await writeJson(join(stateDirectory, "registry.json"), {
       version: 1,
       profiles: [
@@ -591,6 +600,38 @@ describe("primary-session injection", () => {
         }),
       }),
     ).resolves.toBe("# EIGEN\n");
+    for (const source of ["clear", "resume"] as const) {
+      await expect(
+        injectAlwaysContext({
+          client: "codex",
+          scope: "global",
+          stateDirectory,
+          input: JSON.stringify({
+            hook_event_name: "SessionStart",
+            source,
+            cwd: `${temp.path}-unbound`,
+          }),
+        }),
+      ).resolves.toBe("# EIGEN\n");
+    }
+    expect(
+      (
+        await new UsageReceiptOutbox({
+          stateDirectory,
+          apiUrl: eigenUrl,
+          installationId,
+        }).pending()
+      ).map(({ contextTrigger }) => contextTrigger),
+    ).toEqual(["compact", "clear", "resume"]);
+    expect(
+      (
+        await new UsageReceiptOutbox({
+          stateDirectory,
+          apiUrl: acmeUrl,
+          installationId,
+        }).pending()
+      ).map(({ contextTrigger }) => contextTrigger),
+    ).toEqual(["startup"]);
   });
 
   it("suppresses Claude subagents and rejects malformed or non-SessionStart payloads", async () => {
@@ -719,6 +760,11 @@ describe("primary-session injection", () => {
     ] as const) {
       const cache = new AlwaysContextCache({ stateDirectory, apiUrl });
       await cache.apply(await cache.plan(contextManifest(markdown, ["codex"])));
+      await writeJson(profile("tenant", apiUrl, stateDirectory).configPath, {
+        apiUrl,
+        installationId,
+        destinations: [],
+      });
     }
     await writeJson(join(stateDirectory, "registry.json"), {
       version: 1,

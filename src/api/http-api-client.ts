@@ -9,6 +9,7 @@ import {
   sourceStatuses,
   type ApiClient,
   type ClientConfiguration,
+  type ContextUsageReceipt,
   type EnrollmentClient,
   type EnrollmentResult,
   type ManifestArtifact,
@@ -35,6 +36,7 @@ export const apiPaths = {
   clientConfiguration: "api/v1/client-configuration",
   manifest: "api/v1/sync/manifest",
   receipts: "api/v1/sync/receipts",
+  usageReceipts: "api/v1/context-usage-receipts",
   sources: "api/v1/sources",
 } as const;
 
@@ -98,6 +100,7 @@ const clientConfigurationSchema = z
     enabled_clients: z.array(z.enum(agentKinds)),
     installation: z
       .object({
+        id: z.uuid().optional(),
         client_version: z.string().min(1),
         capability_keys: z.array(z.string().min(1)),
         last_client_sequence: z
@@ -417,6 +420,26 @@ export class HttpApiClient implements ApiClient {
     );
   }
 
+  async usageReceipt(
+    token: string,
+    receipt: ContextUsageReceipt,
+  ): Promise<void> {
+    await this.request(apiPaths.usageReceipts, token, "POST", {
+      idempotency_key: receipt.eventId,
+      event_kind: receipt.eventKind,
+      agent_host: receipt.agentHost,
+      occurred_at: receipt.observedAt,
+      ...(receipt.contextTrigger
+        ? { context_trigger: receipt.contextTrigger }
+        : {}),
+      items: receipt.items.map((item) => ({
+        artifact_id: item.artifactId,
+        artifact_version_id: item.artifactVersionId,
+        artifact_kind: item.artifactKind,
+      })),
+    });
+  }
+
   private async parseClientConfiguration(
     response: Response,
   ): Promise<ClientConfiguration> {
@@ -428,6 +451,7 @@ export class HttpApiClient implements ApiClient {
         ...(value.installation
           ? {
               installation: {
+                ...(value.installation.id ? { id: value.installation.id } : {}),
                 clientVersion: value.installation.client_version,
                 capabilityKeys: value.installation.capability_keys,
                 ...(value.installation.sequence_exhausted === undefined

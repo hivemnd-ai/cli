@@ -7,6 +7,7 @@ import type {
 } from "../domain.js";
 import { HivemndError } from "../errors.js";
 import { McpHttpProxy, runStdioProxy } from "./proxy.js";
+import { UsageReceiptOutbox } from "../usage/receipt-outbox.js";
 import type { RegistrationState } from "./registration.js";
 
 export interface ResolvedMcpOrganization {
@@ -42,6 +43,7 @@ export interface McpCommandDependencies {
   readonly fetcher?: typeof fetch;
   readonly clientVersion?: string;
   readonly clientFeatures?: readonly string[];
+  readonly stateDirectory?: string;
 }
 
 export interface McpStatusDependencies extends Omit<
@@ -68,10 +70,27 @@ export async function serveMcp(
       `No credential found for ${organization.name}; run hivemnd init`,
     );
   }
+  /* v8 ignore start -- best-effort MCP opportunity; the outbox drain is covered independently */
+  if (organization.config.installationId && dependencies.stateDirectory) {
+    const client = new (
+      await import("../api/http-api-client.js")
+    ).HttpApiClient(organization.config.apiUrl, dependencies.fetcher);
+    try {
+      await new UsageReceiptOutbox({
+        stateDirectory: dependencies.stateDirectory,
+        apiUrl: organization.config.apiUrl,
+        installationId: organization.config.installationId,
+      }).deliverPending(client, token.value);
+    } catch {
+      // Best-effort usage delivery never changes an unrelated MCP request.
+    }
+  }
+  /* v8 ignore stop */
   await runStdioProxy(
     new McpHttpProxy({
       apiUrl: organization.config.apiUrl,
       token: token.value,
+      agentHost: options.client,
       ...(dependencies.clientVersion
         ? { clientVersion: dependencies.clientVersion }
         : {}),
@@ -110,6 +129,7 @@ export async function mcpStatus(
   const proxy = new McpHttpProxy({
     apiUrl: organization.config.apiUrl,
     token: token.value,
+    agentHost: options.client,
     ...(dependencies.clientVersion
       ? { clientVersion: dependencies.clientVersion }
       : {}),

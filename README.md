@@ -282,6 +282,34 @@ Unrelated hooks and user configuration are preserved. During migration an old
 managed block is removed from `AGENTS.md` or `CLAUDE.md` only when its ownership
 record and exact hash still match; unowned marker text is untouched.
 
+## Usage evidence and privacy
+
+Delivery observations establish which artifact version was applied or already
+present at a destination. `always_context_emitted` establishes that a verified
+embedded document was emitted by the local `SessionStart` handler; it does not
+confirm that a host accepted it or that a model followed it. Claude's
+`skill_activated` records a user-typed slash-command expansion with exact local
+ownership and content hash. It does not establish a successful skill execution,
+implicit model use, or a quality judgment. Codex skill use and implicit Claude
+skill use are currently unobserved.
+
+Claude resolves personal skills before project skills. When an unconfigured
+personal skill of the same name exists, the CLI omits the activation receipt
+rather than attributing it to a managed project version. If ancestor and nested
+workspace skills share a command name but refer to different artifacts or
+versions, the CLI omits the receipt: the current directory does not establish
+which project root the host used to resolve a bare command. Plugin commands,
+enterprise overrides, modified files, and ambiguous ownership also omit an
+activation receipt. See the official [skill name resolution rules](https://code.claude.com/docs/en/skills#resolve-skills-that-share-a-name)
+and [UserPromptExpansion contract](https://code.claude.com/docs/en/hooks#userpromptexpansion).
+
+Usage receipts contain only event and artifact/version identifiers, host,
+timestamp, and the session-start trigger when applicable. They exclude prompts,
+arguments, transcripts, source code, local paths, and session IDs. Hook input is
+processed transiently; transcript files are never read. Receipts are staged in
+the private, bounded per-organization and per-installation outbox and delivered
+through authenticated synchronization. No judge model is called by this flow.
+
 ## Company sources
 
 `hivemnd sources list` calls `GET /api/v1/sources` and displays only the sources
@@ -423,3 +451,256 @@ To release, update `package.json`, `package-lock.json`, and
 `defaultDependencies.clientVersion` to the same new version, merge to `main`,
 then publish a non-prerelease GitHub release tagged `v<version>`. npm versions
 and release tags are immutable; never reuse either.
+
+### Preview a local plugin source
+
+```sh
+hivemnd marketplace preview ./plugin --format agent-plugins
+hivemnd marketplace preview ./marketplace --format claude-marketplace
+```
+
+This read-only preview accepts an existing local Git checkout with a committed
+HEAD. `agent-plugins` inventories the v1 root `plugin.json`, fixed `skills/`
+children and `mcp.json`. `claude-marketplace` reads the separate
+`.claude-plugin/marketplace.json` catalog and inventories its local relative-path
+packages. Remote, archive, npm and command sources remain unresolved; the preview
+never fetches, installs, executes hooks or connects to MCP servers. It does not
+load tenant configuration, credentials or the CLI update checker.
+
+The CLI prints metadata, SHA-256 hashes, component counts and warnings. The importer
+retains exact UTF-8 manifests and raw declarations in memory for future review;
+these payloads are never printed or persisted by this command. Observed component
+configuration does not imply granted permissions or actual runtime usage.
+
+`commitSha` identifies the local committed HEAD, with Git replace references
+disabled. `dirty` reports captured manifest/skill bytes or inventoried component
+paths that differ from that commit, including deleted files; it is not the status
+of the entire working tree. This is local provenance, without authenticated
+remote repository identity. Inventory is not an installation-ready release: skill
+frontmatter, MCP schemas and executable contents still require separate review.
+Inspect an idle checkout; this command is not a sandbox against a separate process
+concurrently rewriting its directories.
+
+The local policy rejects traversal and all package symlinks, including links that
+stay inside the package. Defaults limit each read to 512 KiB, total captured bytes
+to 8 MiB, catalog entries to 256 and immediate skill-directory entries to 256.
+Malformed or duplicate JSON keys reject the preview. It does not change existing
+synchronization, embeddings, or managed agent configuration.
+
+Formats are intentionally separate. References:
+[Agent Plugins v1](https://agent-plugins.org/specification) and
+[Claude marketplaces](https://code.claude.com/docs/en/plugin-marketplaces).
+
+## Local development: marketplace API and owned bundles (unpublished)
+
+These commands require the matching marketplace backend and are not in the
+published npm 0.5.4 package. Configure the tenant API and enrolled installation
+first. For an authorized public repository, registration starts with an explicit
+format, manifest, ref and lifecycle mode:
+
+```sh
+hivemnd marketplace register --repository-id "$GITHUB_REPOSITORY_ID" \
+  --name "Engineering conventions" --format claude-marketplace \
+  --manifest-path .claude-plugin/marketplace.json --ref main --managed --apply
+hivemnd marketplace list
+hivemnd marketplace refresh "$REGISTRATION_ID" \
+  --expected-lock-version "$LOCK_VERSION" --apply
+hivemnd marketplace catalog "$REGISTRATION_ID"
+hivemnd marketplace declare --client claude --scope user --apply
+hivemnd marketplace select --registration "$REGISTRATION_ID" --plugin "$PLUGIN_KEY" \
+  --audience installation --target "$TARGET_ID" --client claude --scope user \
+  --enabled --apply
+hivemnd marketplace sync --apply
+```
+
+Set the variables from your repository identity and returned registration,
+catalog and target metadata. Without `--apply`, mutations produce a plan before
+credential lookup, network requests or writes. `update` and `refresh` require the
+current lock version. `--managed` and `--native` are mutually exclusive; native
+activation support is reported independently. Workspace targets require an opaque
+UUID `--binding`, and no workspace path is sent to the backend.
+
+Applying `declare` records private local consent for future automatic updates of
+that owned target. Normal `sync --all --apply` then reconciles those opted-in
+targets after governed-artifact synchronization succeeds. Without local consent,
+normal synchronization makes no marketplace requests. Public reconciliation asks
+the existing backend queue to refresh the source; `refresh_requested` means queue
+acceptance, not completion. A stale bundle triggers at most two rereads of the
+current plan. Each complete target inventory verifies before publication.
+
+Bundles live outside native discovery roots in private owner-specific stores.
+The CLI checks the complete inventory, exact binary bytes, Git IDs, SHA-256 and
+source executable metadata. Payload files remain 0600 and directories 0700;
+current/previous pointers and mutable runtime data are separate. New source
+versions need no repeated acknowledgement. Locally edited owned bytes fail
+closed; automatic drift repair and general native/managed ownership transitions
+are not implemented.
+
+For an explicitly declared Claude target, a bounded isolated help/version probe
+can produce a manual `--plugin-dir` launch plan for a compatible verified package.
+No session is started and no native settings are written. Codex activation and
+automatic native lifecycle are unsupported. Materialization does not prove
+installation, loading, invocation or execution; those signals remain unknown.
+No package hooks, scripts, installers or MCP servers run while indexing or copying.
+
+Private repositories require a separate temporary user authorization. The CLI
+bearer identifies the enrolled installation and does not supply GitHub access:
+
+```sh
+hivemnd marketplace authorize --apply
+# Open the printed tenant URL and approve the request in the browser.
+hivemnd marketplace register --repository-id "$GITHUB_REPOSITORY_ID" \
+  --private-source "$AUTHORIZED_SOURCE_ID" --name "Private conventions" \
+  --format claude-marketplace --manifest-path .claude-plugin/marketplace.json \
+  --ref main --managed --apply
+# Refresh, declare, select and sync using the same commands shown above.
+hivemnd marketplace revoke-authorization --apply
+```
+
+Authorization uses a memory-only PKCE verifier and an explicit browser approval.
+The CLI stores only a private, expiring opaque Hivemnd handle scoped to the tenant,
+configuration and installation. GitHub credentials remain encrypted on the server.
+The handle is sent in an HTTP header, never printed or placed in configuration,
+URLs, argv or schedules. It expires within ten minutes and cannot extend the
+original GitHub approval window. `status` reports the temporary link and expiry;
+repository access is checked on every operation.
+
+Private reconciliation can refresh selected repositories only while that grant
+remains valid. Automatic sync never starts authorization; after expiry, run
+`authorize --apply` again. Authorization and revocation default to plans without
+credential lookup, network requests or writes. `--private-source` references an
+existing authorized Source UUID and does not create a Source or GitHub App.
+
+This integration adds no package-use telemetry, captured prompts/private code or
+paid judges. Existing governed receipt semantics remain separate.
+
+## Local development: offline diagnostics (unpublished)
+
+The 0.6.0 release candidate adds `hivemnd doctor --offline`; it is **not in the
+published npm 0.5.4 package**.
+
+```sh
+hivemnd doctor --offline
+hivemnd --org eigen doctor --offline
+hivemnd --config /absolute/private/config.json doctor --offline
+```
+
+This mode checks local configuration without upgrading legacy destination IDs.
+It reports the configured destination count, not destination access, and reports
+usage-outbox filesystem metadata for the selected organization/installation:
+queued `.json` file count, total bytes, and oldest **file modification age**.
+These are unvalidated queued files, not verified event counts. File age is not
+capture age, ingestion delay, or delivery latency. Receipt contents are never
+read or parsed, so malformed JSON bodies cannot be diagnosed by this command.
+
+The normal capacity is 256 files / 1 MiB. Enumeration stops beyond 512 directory
+entries, 256 queued files, or 1 MiB; unsafe paths, non-private permissions,
+symlinks, changed directory/file identity, read failures or exceeded limits yield
+`unknown` without partial totals. Missing queues report empty without creating
+anything; older configurations without installation identity report unknown.
+Inspection is a bounded metadata observation, not an atomic snapshot under
+concurrent synchronization. Directory ancestry is checked before and after,
+and file descriptors use no-follow/nonblocking flags; a concurrent change may
+make the result unknown. This is not an operating-system sandbox boundary.
+
+Offline doctor performs no API/update request, credential/Keychain lookup,
+receipt delivery, creation, permission repair, or deletion. It prints no paths,
+content, destination labels, identifiers, tokens, or raw filesystem errors.
+Credentials and API are explicitly `not checked`; exit 0 means the diagnostic
+completed, not that synchronization is ready. Normal `hivemnd doctor` retains
+its credential, destination-access, and API checks. No backend or database
+change is required, and this command does not add skill-use detection or judges.
+
+## Internal development: inert complete bundles (unpublished)
+
+`src/marketplace/bundle-store.ts` exports the local `materializeLocalBundle`
+primitive. The API workflow above composes its verified byte-store companion;
+these primitives are not in npm 0.5.4.
+The caller supplies canonical absolute local source/store paths, an owner ID,
+a source commit SHA, the complete file inventory (`path`, byte size, SHA-256,
+`executable` intent), and explicit runtime limits for files, bytes, depth and
+scanned entries. Limits are caller decisions, not marketplace product limits.
+This primitive does not fetch, resolve Git refs or attest that a supplied SHA
+owns the supplied bytes. The resolver must establish that provenance first.
+
+The complete package includes manifests, skills, scripts, binary/CSV data,
+references and license files. No Markdown-only extraction or silent hidden-file
+exclusion occurs. Empty directories and non-regular entries are rejected;
+symlinks, hardlinks, traversal, case-colliding prefixes and incomplete inventories fail.
+The source executable intent is checked and retained in the descriptor, while
+stored files are deliberately 0600 and directories 0700. This inert copy is not
+ready for direct execution; native execution requires a separate supported harness lifecycle.
+
+The private store must be outside agent discovery directories. Known `.agents`,
+`.claude` and `.codex` paths are rejected; the caller must also exclude any custom
+harness discovery roots. A store is created only at an explicit absent path and
+bound to an owner marker. Existing foreign or unsafe stores are refused. Bytes
+are copied into a unique owned staging directory, verified again, and published
+by an atomic directory move to `versions/<digest>/payload`. Repeating a verified
+snapshot reuses it; drift fails without rewriting it. New upstream snapshots
+can be materialized without a per-version acknowledgement gate. Older versions
+are retained, and failures remove only this operation's staging/lock. Stable
+`store/data/` is outside all versions; its contents are never read, replaced or
+removed. Package `data/` files inside a payload remain immutable package bytes.
+
+The digest identifies the internal descriptor: SHA-256 of UTF-8 `JSON.stringify`
+with ordered keys `{schemaVersion:1, ownerId, commitSha, files}`; each file has
+ordered keys `{path,size,sha256,executable}` and files sort by
+UTF-8 byte ordering (`Buffer.compare`). It includes owner and commit, so the same
+bytes from a new commit produce another store version. It is not the proposed
+backend `tree_sha256_v1` package hash or a cross-runtime canonical encoding.
+
+This primitive itself owns no current pointer, registration, native settings,
+garbage collection, network or credentials. The composed marketplace workflow
+adds authenticated transport, managed reconciliation and recoverable pointers;
+native/managed ownership transitions and native activation remain incomplete.
+Neither layer claims observed use or executes package hooks/MCP. Filesystem checks detect unsafe
+state and ordinary concurrent changes; this is not a sandbox against another
+process running as the same OS user. Atomic rename supplies visibility, not a
+power-loss durability guarantee.
+
+### Local committed Git provenance (internal, unpublished)
+
+`readCommittedGitBundle` in `src/marketplace/git-bundle.ts` accepts a local
+repository directory, a full 40/64-character commit object ID, literal
+`packageRoot` (`.` for the committed repository root), and caller limits. It
+returns the exact commit/package root/tree OID plus complete file entries with
+raw binary bytes, byte size, SHA-256, Git blob OID, Git mode and executable intent.
+Untracked, modified or deleted working-tree files do not affect this inventory.
+
+The reader uses only `cat-file` and NUL-delimited `ls-tree`. It checks the actual
+object type before reading, so annotated tags cannot masquerade as commits. It
+recomputes Git object IDs from the object type, byte length and raw bytes, and
+verifies the commit/tree chain for each literal package-root segment, the package
+tree, descendant trees and blobs. It rejects unsupported modes, symlinks,
+gitlinks, unsafe/colliding paths, empty directories, corrupt/missing objects and
+incomplete or inconsistent plumbing output. These are transport/provenance
+checks; they do not validate every plugin's component schemas or make its code
+safe to execute.
+
+The shared local Git policy strips inherited `GIT_*` overrides, disables lazy
+fetch and replacement objects, allows no transport protocol, disables hooks and
+fsmonitor, and ignores system/global Git configuration. No checkout, status,
+diff, filters, textconv, fetch or script/MCP invocation occurs. Git failures
+produce a generic error without stderr, author identity, source bytes or paths.
+
+`maxOutputBytes` bounds aggregate subprocess stdout plus stderr, including raw
+object bodies and repeated tree metadata. It is separate from the package's
+file/total-byte budgets. `maxDurationMs` bounds the reader's overall elapsed
+budget with remaining-time process deadlines and SIGKILL on process timeout;
+CPU work and OS I/O are not a hard real-time sandbox. File/depth/entry limits
+remain caller decisions. Git itself must be a trusted local runtime.
+
+`materializeCommittedGitBundle` connects this verified inventory directly to
+`materializeBundleBytes`, using the same private atomic store. It refuses a store
+inside or containing the source repository and never creates an executable
+export of committed scripts. It returns provenance metadata without content
+buffers plus the inert stored path/digest. The existing store descriptor format
+is unchanged: commit, owner and normalized file inventory are persisted; package
+root, tree OID and blob OIDs are returned for a future registration adapter.
+
+This proves membership in the supplied local commit, not a signature, trusted
+publisher, remote ref, GitHub installation authority or repository ACL. Remote
+resolution/access belongs to the backend API workflow described above; native
+agent lifecycle and deployed end-to-end proof remain incomplete. This local Git
+primitive itself adds no database change, remote download or usage claim.

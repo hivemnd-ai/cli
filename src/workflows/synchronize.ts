@@ -1,4 +1,5 @@
 import type { AuthenticatedContext, CliContext } from "../cli/context.js";
+import { synchronizeMarketplaces } from "./marketplace-reconcile.js";
 import { asHivemndError, HivemndError } from "../errors.js";
 import { SyncApplier } from "../sync/applier.js";
 import { SyncPlanner } from "../sync/planner.js";
@@ -19,6 +20,7 @@ import {
   type ObservationBootstrap,
 } from "../sync/receipt-outbox.js";
 import { buildDeliveryObservationReceipt } from "../sync/receipt.js";
+import { UsageReceiptOutbox } from "../usage/receipt-outbox.js";
 import type {
   AgentAdapter,
   ClientConfiguration,
@@ -68,6 +70,11 @@ export async function synchronize(
   await outbox.withLock(() =>
     synchronizeAuthenticated(options, context, authenticated, outbox),
   );
+  await synchronizeMarketplaces(
+    context,
+    { apply: options.apply && !options.dryRun, automatic: true },
+    authenticated,
+  );
 }
 
 async function synchronizeAuthenticated(
@@ -78,6 +85,30 @@ async function synchronizeAuthenticated(
 ): Promise<void> {
   const { dependencies } = context;
   const { config, token, client } = authenticated;
+  /* v8 ignore start -- thin sync orchestration; FIFO and failure semantics are covered by the outbox integration */
+  if (config.installationId && client.usageReceipt) {
+    const usage = await new UsageReceiptOutbox({
+      stateDirectory:
+        dependencies.environment.HIVEMND_HOME ??
+        join(dependencies.homeDirectory, ".hivemnd"),
+      apiUrl: config.apiUrl,
+      installationId: config.installationId,
+    }).deliverPending(
+      { usageReceipt: client.usageReceipt.bind(client) },
+      token.value,
+    );
+    if (usage.accepted > 0) {
+      dependencies.output.write(
+        `usage receipt retry: accepted ${usage.accepted}`,
+      );
+    }
+    if (usage.pending > 0) {
+      dependencies.output.write(
+        `usage receipt retry: deferred (${usage.pending} pending)`,
+      );
+    }
+  }
+  /* v8 ignore stop */
   const retried = await outbox.deliverPending(client, token.value);
   if (retried.accepted > 0) {
     dependencies.output.write(`receipt retry: accepted ${retried.accepted}`);
