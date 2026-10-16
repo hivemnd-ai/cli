@@ -451,3 +451,42 @@ To release, update `package.json`, `package-lock.json`, and
 `defaultDependencies.clientVersion` to the same new version, merge to `main`,
 then publish a non-prerelease GitHub release tagged `v<version>`. npm versions
 and release tags are immutable; never reuse either.
+
+### Preview a local plugin source
+
+```sh
+hivemnd marketplace preview ./plugin --format agent-plugins
+hivemnd marketplace preview ./marketplace --format claude-marketplace
+```
+
+This read-only preview accepts an existing local Git checkout with a committed
+HEAD. `agent-plugins` inventories the v1 root `plugin.json`, fixed `skills/`
+children and `mcp.json`. `claude-marketplace` reads the separate
+`.claude-plugin/marketplace.json` catalog and inventories its local relative-path
+packages. Remote, archive, npm and command sources remain unresolved; the preview
+never fetches, installs, executes hooks or connects to MCP servers. It does not
+load tenant configuration, credentials or the CLI update checker.
+
+The CLI prints metadata, SHA-256 hashes, component counts and warnings. The importer
+retains exact UTF-8 manifests and raw declarations in memory for future review;
+these payloads are never printed or persisted by this command. Observed component
+configuration does not imply granted permissions or actual runtime usage.
+
+`commitSha` identifies the local committed HEAD, with Git replace references
+disabled. `dirty` reports captured manifest/skill bytes or inventoried component
+paths that differ from that commit, including deleted files; it is not the status
+of the entire working tree. This is local provenance, without authenticated
+remote repository identity. Inventory is not an installation-ready release: skill
+frontmatter, MCP schemas and executable contents still require separate review.
+Inspect an idle checkout; this command is not a sandbox against a separate process
+concurrently rewriting its directories.
+
+The local policy rejects traversal and all package symlinks, including links that
+stay inside the package. Defaults limit each read to 512 KiB, total captured bytes
+to 8 MiB, catalog entries to 256 and immediate skill-directory entries to 256.
+Malformed or duplicate JSON keys reject the preview. It does not change existing
+synchronization, embeddings, or managed agent configuration.
+
+Formats are intentionally separate. References:
+[Agent Plugins v1](https://agent-plugins.org/specification) and
+[Claude marketplaces](https://code.claude.com/docs/en/plugin-marketplaces).

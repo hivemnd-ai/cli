@@ -14,6 +14,7 @@ import { registerWorkspaceCommands } from "../commands/workspace.js";
 import { registerOrganizationCommands } from "../commands/organizations.js";
 import { registerMcpCommands } from "../commands/mcp.js";
 import { registerContextCommands } from "../commands/context.js";
+import { registerMarketplaceCommands } from "../commands/marketplace.js";
 import { OrganizationRegistryRepository } from "../organizations/registry.js";
 import { OrganizationResolver } from "../organizations/resolver.js";
 import type { RuntimeDependencies } from "../runtime/dependencies.js";
@@ -74,6 +75,7 @@ export function createProgram(dependencies: RuntimeDependencies): Command {
     resolver: organizationResolver,
   });
   registerContextCommands(program, dependencies);
+  registerMarketplaceCommands(program, dependencies);
 
   return program;
 }
