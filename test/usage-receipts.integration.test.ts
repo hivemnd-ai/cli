@@ -219,6 +219,100 @@ describe("always-context exact selection", () => {
 });
 
 describe("explicit Claude Skill usage", () => {
+  it("does not infer a nested skill version from cwd for a shared bare command name", async () => {
+    const temp = await temporaryDirectory();
+    cleanups.push(temp.cleanup);
+    const stateDirectory = join(temp.path, "state");
+    const homeDirectory = join(temp.path, "home");
+    const workspace = join(temp.path, "repo");
+    const nested = join(workspace, "apps", "web");
+    const apiUrl = "https://shared.hivemnd.cloud/eigen";
+    const configPath = join(stateDirectory, "config.json");
+    const config = {
+      apiUrl,
+      installationId,
+      destinations: [workspace, nested].map((path, index) => ({
+        name: `claude-project-${index}`,
+        agent: "claude" as const,
+        scope: "workspace" as const,
+        path,
+      })),
+    };
+    await writeJson(configPath, config);
+    await writeJson(join(stateDirectory, "registry.json"), {
+      version: 1,
+      profiles: [
+        {
+          key: profileKey(apiUrl),
+          alias: "eigen",
+          name: "Eigen",
+          slug: "eigen",
+          apiUrl,
+          configPath,
+        },
+      ],
+      workspaceBindings: [workspace, nested].map((path) => ({
+        path,
+        organizationKey: profileKey(apiUrl),
+      })),
+      globalBindings: [],
+    });
+    const adapters = createFilesystemAdapters(
+      config,
+      [],
+      homeDirectory,
+      stateDirectory,
+    );
+    for (const [index, adapter] of adapters.entries()) {
+      const content = bytes(`# Skill version ${index}\n`);
+      await adapter.write("skills/team/SKILL.md", content);
+      await adapter.replaceOwnership([
+        {
+          relativePath: "skills/team/SKILL.md",
+          logicalId: `artifact-${index}`,
+          artifactVersionId: `version-${index}`,
+          sha256: hash(content),
+          releaseId: "release-1",
+        },
+      ]);
+    }
+    const options = {
+      scope: "workspace" as const,
+      workspace: nested,
+      stateDirectory,
+      homeDirectory,
+      enterprisePolicyPaths: [],
+      input: JSON.stringify({
+        hook_event_name: "UserPromptExpansion",
+        session_id: "private-session",
+        transcript_path: "/private/transcript",
+        cwd: nested,
+        permission_mode: "default",
+        expansion_type: "slash_command",
+        command_name: "team",
+        command_args: "private arguments",
+        command_source: "custom",
+        prompt: "/team private arguments",
+      }),
+    };
+    const outbox = new UsageReceiptOutbox({
+      stateDirectory,
+      apiUrl,
+      installationId,
+    });
+    await expect(stageClaudeSkillActivation(options)).resolves.toBe(
+      "ambiguous",
+    );
+    await expect(outbox.pending()).resolves.toEqual([]);
+    // An unrelated nested destination must not hide an exact ancestor version.
+    await adapters[1]!.remove("skills/team/SKILL.md");
+    await adapters[1]!.replaceOwnership([]);
+    await expect(stageClaudeSkillActivation(options)).resolves.toBe("staged");
+    expect((await outbox.pending())[0]?.items[0]?.artifactVersionId).toBe(
+      "version-0",
+    );
+  });
+
   it("resolves documented file-based managed-settings paths per host platform", () => {
     expect(claudeEnterprisePolicyPaths("darwin", {})).toEqual([
       "/Library/Application Support/ClaudeCode/managed-settings.json",

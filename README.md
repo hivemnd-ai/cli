@@ -295,7 +295,10 @@ skill use are currently unobserved.
 
 Claude resolves personal skills before project skills. When an unconfigured
 personal skill of the same name exists, the CLI omits the activation receipt
-rather than attributing it to a managed project version. Plugin commands,
+rather than attributing it to a managed project version. If ancestor and nested
+workspace skills share a command name but refer to different artifacts or
+versions, the CLI omits the receipt: the current directory does not establish
+which project root the host used to resolve a bare command. Plugin commands,
 enterprise overrides, modified files, and ambiguous ownership also omit an
 activation receipt. See the official [skill name resolution rules](https://code.claude.com/docs/en/skills#resolve-skills-that-share-a-name)
 and [UserPromptExpansion contract](https://code.claude.com/docs/en/hooks#userpromptexpansion).

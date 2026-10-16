@@ -153,21 +153,13 @@ async function resolveManagedSkill(
   ) {
     return "unmanaged";
   }
-  const workspaceCandidates = destinations.filter(
+  // cwd alone does not identify the project root used for bare /skill names.
+  // Keep ancestor candidates: nested skills may require qualified commands.
+  const workspace = destinations.filter(
     (destination) =>
       destination.scope === "workspace" &&
       destination.path &&
       within(destination.path, input.cwd),
-  );
-  const maximumWorkspaceLength = Math.max(
-    0,
-    ...workspaceCandidates.map(
-      (destination) => resolve(String(destination.path)).length,
-    ),
-  );
-  const workspace = workspaceCandidates.filter(
-    (destination) =>
-      resolve(String(destination.path)).length === maximumWorkspaceLength,
   );
   let item:
     | {
@@ -215,7 +207,6 @@ async function resolveManagedSkill(
         candidate,
       ]),
     );
-    /* v8 ignore next -- multiple exact candidates at one precedence fail closed */
     if (unique.size > 1) return "ambiguous";
     item = unique.values().next().value;
     if (item) break;
