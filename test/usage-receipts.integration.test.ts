@@ -559,6 +559,42 @@ describe("explicit Claude Skill usage", () => {
         }).pending()
       )[1]?.items[0]?.artifactVersionId,
     ).toBe("00000000-0000-4000-8000-000000000031");
+    // A personal skill still wins when it is outside this tenant's destinations.
+    await writeJson(configPath, {
+      ...scopedConfig,
+      destinations: scopedConfig.destinations.filter(
+        (destination) => destination.scope !== "root",
+      ),
+    });
+    const workspaceActivation = {
+      scope: "workspace" as const,
+      workspace: workspacePath,
+      stateDirectory,
+      homeDirectory,
+      enterprisePolicyPaths: [],
+      input: JSON.stringify({ ...payload, cwd: workspacePath }),
+    };
+    await expect(stageClaudeSkillActivation(workspaceActivation)).resolves.toBe(
+      "unmanaged",
+    );
+    const outbox = new UsageReceiptOutbox({
+      stateDirectory,
+      apiUrl,
+      installationId,
+    });
+    expect(await outbox.pending()).toHaveLength(2);
+    await rm(join(adapter.root, "skills/team/SKILL.md"));
+    await expect(stageClaudeSkillActivation(workspaceActivation)).resolves.toBe(
+      "staged",
+    );
+    expect((await outbox.pending()).at(-1)?.items[0]?.artifactVersionId).toBe(
+      "00000000-0000-4000-8000-000000000041",
+    );
+    expect(JSON.stringify(await outbox.pending())).not.toMatch(
+      /private|prompt|command_args|transcript|session|cwd|path/i,
+    );
+    await adapter.write("skills/team/SKILL.md", body);
+    await writeJson(configPath, scopedConfig);
     await adapter.write("skills/unknown/SKILL.md", bytes("unmanaged"));
     await expect(
       stageClaudeSkillActivation({
@@ -655,7 +691,7 @@ describe("explicit Claude Skill usage", () => {
         apiUrl,
         installationId,
       }).pending(),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
     const usageOutbox = new UsageReceiptOutbox({
       stateDirectory,
       apiUrl,

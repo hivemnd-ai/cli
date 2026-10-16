@@ -73,7 +73,7 @@ export async function stageClaudeSkillActivation(
   if (slug.includes(":")) return "plugin_override";
   if (!/^[a-z0-9][a-z0-9._-]{0,62}$/.test(slug)) return "unmanaged";
   if (
-    await enterprisePolicyPresent(
+    await anyPathPresent(
       options.enterprisePolicyPaths ??
         claudeEnterprisePolicyPaths(process.platform, process.env),
     )
@@ -137,6 +137,22 @@ async function resolveManagedSkill(
   const root = destinations.filter(
     (destination) => destination.scope === "root",
   );
+  // Claude resolves personal skills before project skills, even when the
+  // personal directory is not a destination managed by this organization.
+  if (
+    root.length === 0 &&
+    (await anyPathPresent([
+      join(
+        resolve(options.homeDirectory),
+        ".claude",
+        "skills",
+        slug,
+        "SKILL.md",
+      ),
+    ]))
+  ) {
+    return "unmanaged";
+  }
   const workspaceCandidates = destinations.filter(
     (destination) =>
       destination.scope === "workspace" &&
@@ -220,9 +236,7 @@ function within(parent: string, child: string): boolean {
   );
 }
 
-async function enterprisePolicyPresent(
-  paths: readonly string[],
-): Promise<boolean> {
+async function anyPathPresent(paths: readonly string[]): Promise<boolean> {
   for (const path of paths) {
     try {
       await lstat(path);

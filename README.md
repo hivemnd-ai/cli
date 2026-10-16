@@ -282,6 +282,31 @@ Unrelated hooks and user configuration are preserved. During migration an old
 managed block is removed from `AGENTS.md` or `CLAUDE.md` only when its ownership
 record and exact hash still match; unowned marker text is untouched.
 
+## Usage evidence and privacy
+
+Delivery observations establish which artifact version was applied or already
+present at a destination. `always_context_emitted` establishes that a verified
+embedded document was emitted by the local `SessionStart` handler; it does not
+confirm that a host accepted it or that a model followed it. Claude's
+`skill_activated` records a user-typed slash-command expansion with exact local
+ownership and content hash. It does not establish a successful skill execution,
+implicit model use, or a quality judgment. Codex skill use and implicit Claude
+skill use are currently unobserved.
+
+Claude resolves personal skills before project skills. When an unconfigured
+personal skill of the same name exists, the CLI omits the activation receipt
+rather than attributing it to a managed project version. Plugin commands,
+enterprise overrides, modified files, and ambiguous ownership also omit an
+activation receipt. See the official [skill name resolution rules](https://code.claude.com/docs/en/skills#resolve-skills-that-share-a-name)
+and [UserPromptExpansion contract](https://code.claude.com/docs/en/hooks#userpromptexpansion).
+
+Usage receipts contain only event and artifact/version identifiers, host,
+timestamp, and the session-start trigger when applicable. They exclude prompts,
+arguments, transcripts, source code, local paths, and session IDs. Hook input is
+processed transiently; transcript files are never read. Receipts are staged in
+the private, bounded per-organization and per-installation outbox and delivered
+through authenticated synchronization. No judge model is called by this flow.
+
 ## Company sources
 
 `hivemnd sources list` calls `GET /api/v1/sources` and displays only the sources
