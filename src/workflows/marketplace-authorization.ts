@@ -87,14 +87,16 @@ export async function runMarketplaceAuthorization(
     session.token.value,
     pkce.challenge,
   );
-  const deadline = Date.parse(handoff.expires_at);
-  if (deadline <= runtime.now() || deadline > started + 600_000)
+  const responseNow = runtime.now();
+  let serverDeadline = Date.parse(handoff.expires_at);
+  if (serverDeadline <= responseNow || serverDeadline > responseNow + 600_000)
     return invalidExpiry();
+  let deadline = Math.min(serverDeadline, started + 600_000);
   output.write(
     JSON.stringify({
       status: "browser_approval_required",
       verification_uri: handoff.verification_uri,
-      expires_at: handoff.expires_at,
+      expires_at: new Date(deadline).toISOString(),
     }),
   );
   for (let attempts = 0; attempts < 300; attempts++) {
@@ -109,8 +111,10 @@ export async function runMarketplaceAuthorization(
       pkce.verifier,
     );
     const expires = Date.parse(result.expires_at);
-    if (expires > deadline) return invalidExpiry();
-    if (expires <= runtime.now())
+    if (expires > serverDeadline) return invalidExpiry();
+    serverDeadline = expires;
+    deadline = Math.min(deadline, serverDeadline);
+    if (deadline <= runtime.now())
       throw new HivemndError(
         "HTTP_FAILED",
         "Marketplace authorization failed: authorization_expired",
@@ -118,19 +122,19 @@ export async function runMarketplaceAuthorization(
     if (result.status === "authorized") {
       await store.save({
         authorizationToken: result.authorization_token,
-        expiresAt: result.expires_at,
+        expiresAt: new Date(deadline).toISOString(),
       });
       output.write(
         JSON.stringify({
           status: "temporary_authorization_linked",
-          expires_at: result.expires_at,
+          expires_at: new Date(deadline).toISOString(),
           repository_access: "checked_per_operation",
         }),
       );
       return;
     }
     await runtime.sleep(
-      Math.min(result.poll_interval_seconds * 1000, expires - runtime.now()),
+      Math.min(result.poll_interval_seconds * 1000, deadline - runtime.now()),
     );
   }
   throw new HivemndError(

@@ -165,6 +165,250 @@ describe("private marketplace browser handoff", () => {
     );
     expect(await test.invoke(["authorize", "--apply", "--dry-run"])).toBe(1);
   });
+  it("accepts a server handoff issued after HTTP delay while capping printed and cached expiry to the client start", async () => {
+    const test = await setup();
+    const initial = Date.now();
+    let now = initial;
+    const clientExpiry = new Date(initial + 600_000).toISOString();
+    let serverExpiry = "";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (url) => {
+        if (requestUrl(url).includes("/exchange"))
+          return json({
+            status: "authorized",
+            authorization_token: grant,
+            expires_at: serverExpiry,
+          });
+        now += 2500;
+        serverExpiry = new Date(now + 600_000).toISOString();
+        return json(
+          {
+            authorization_id: id,
+            verification_uri: `https://host/eigen/marketplace/authorizations/${id}`,
+            expires_at: serverExpiry,
+            poll_interval_seconds: 2,
+          },
+          201,
+        );
+      }),
+    );
+    await runMarketplaceAuthorization(
+      test.context,
+      "authorize",
+      { apply: true },
+      {
+        now: () => now,
+        sleep: async () => undefined,
+      },
+    );
+    expect(serverExpiry > clientExpiry).toBe(true);
+    expect(await test.store().load()).toEqual({
+      authorizationToken: grant,
+      expiresAt: clientExpiry,
+    });
+    expect(
+      test.output.messages.map(
+        (message) => JSON.parse(message) as { expires_at: string },
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ expires_at: clientExpiry }),
+      ]),
+    );
+    expect(test.output.messages).toHaveLength(2);
+    expect(
+      test.output.messages.every((message) => message.includes(clientExpiry)),
+    ).toBe(true);
+    expect(test.output.messages.join(" ")).not.toContain(grant);
+  });
+
+  it("rejects a delayed server response beyond its own 600-second response-time bound", async () => {
+    const test = await setup();
+    const initial = Date.now();
+    let now = initial;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async () => {
+        now += 2500;
+        return json(
+          {
+            authorization_id: id,
+            verification_uri: `https://host/eigen/marketplace/authorizations/${id}`,
+            expires_at: new Date(now + 600_001).toISOString(),
+            poll_interval_seconds: 2,
+          },
+          201,
+        );
+      }),
+    );
+    await expect(
+      runMarketplaceAuthorization(
+        test.context,
+        "authorize",
+        { apply: true },
+        {
+          now: () => now,
+          sleep: async () => undefined,
+        },
+      ),
+    ).rejects.toThrow("expiry");
+    expect(await test.store().load()).toBeUndefined();
+  });
+
+  it("rejects an exchange that exceeds the original server deadline even after a delayed handoff", async () => {
+    const test = await setup();
+    const initial = Date.now();
+    let now = initial;
+    let serverDeadline = 0,
+      exchanges = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (url) => {
+        if (requestUrl(url).includes("/exchange")) {
+          exchanges++;
+          return json({
+            status: "authorized",
+            authorization_token: grant,
+            expires_at: new Date(serverDeadline + 1).toISOString(),
+          });
+        }
+        now += 2500;
+        serverDeadline = now + 600_000;
+        return json(
+          {
+            authorization_id: id,
+            verification_uri: `https://host/eigen/marketplace/authorizations/${id}`,
+            expires_at: new Date(serverDeadline).toISOString(),
+            poll_interval_seconds: 2,
+          },
+          201,
+        );
+      }),
+    );
+    await expect(
+      runMarketplaceAuthorization(
+        test.context,
+        "authorize",
+        { apply: true },
+        {
+          now: () => now,
+          sleep: async () => undefined,
+        },
+      ),
+    ).rejects.toThrow("expiry");
+    expect(exchanges).toBe(1);
+    expect(await test.store().load()).toBeUndefined();
+  });
+
+  it("retains earlier OAuth expiry and refuses a later exchange that renews a shortened pending deadline", async () => {
+    for (const renew of [false, true]) {
+      const test = await setup();
+      const initial = Date.now();
+      let now = initial;
+      let polls = 0;
+      const pendingDeadline = initial + 90_000;
+      const finalDeadline = renew ? pendingDeadline + 1 : initial + 60_000;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>(async (url) => {
+          if (requestUrl(url).includes("/exchange"))
+            return ++polls === 1
+              ? json(
+                  {
+                    status: "pending",
+                    expires_at: new Date(pendingDeadline).toISOString(),
+                    poll_interval_seconds: 2,
+                  },
+                  202,
+                )
+              : json({
+                  status: "authorized",
+                  authorization_token: grant,
+                  expires_at: new Date(finalDeadline).toISOString(),
+                });
+          now += 2500;
+          return json(
+            {
+              authorization_id: id,
+              verification_uri: `https://host/eigen/marketplace/authorizations/${id}`,
+              expires_at: new Date(now + 600_000).toISOString(),
+              poll_interval_seconds: 2,
+            },
+            201,
+          );
+        }),
+      );
+      const run = runMarketplaceAuthorization(
+        test.context,
+        "authorize",
+        { apply: true },
+        {
+          now: () => now,
+          sleep: async (ms) => {
+            now += ms;
+          },
+        },
+      );
+      if (renew) {
+        await expect(run).rejects.toThrow("expiry");
+        expect(await test.store().load()).toBeUndefined();
+      } else {
+        await run;
+        expect(await test.store().load()).toEqual({
+          authorizationToken: grant,
+          expiresAt: new Date(finalDeadline).toISOString(),
+        });
+        expect(test.output.messages.at(-1)).toContain(
+          new Date(finalDeadline).toISOString(),
+        );
+      }
+      expect(polls).toBe(2);
+    }
+  });
+
+  it("never caches a grant when an exchange response arrives after the absolute client ceiling", async () => {
+    const test = await setup();
+    const initial = Date.now();
+    let now = initial;
+    let serverDeadline = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (url) => {
+        if (requestUrl(url).includes("/exchange")) {
+          now = initial + 600_001;
+          return json({
+            status: "authorized",
+            authorization_token: grant,
+            expires_at: new Date(serverDeadline).toISOString(),
+          });
+        }
+        now += 2500;
+        serverDeadline = now + 600_000;
+        return json(
+          {
+            authorization_id: id,
+            verification_uri: `https://host/eigen/marketplace/authorizations/${id}`,
+            expires_at: new Date(serverDeadline).toISOString(),
+            poll_interval_seconds: 2,
+          },
+          201,
+        );
+      }),
+    );
+    await expect(
+      runMarketplaceAuthorization(
+        test.context,
+        "authorize",
+        { apply: true },
+        {
+          now: () => now,
+          sleep: async () => undefined,
+        },
+      ),
+    ).rejects.toThrow("authorization_expired");
+    expect(await test.store().load()).toBeUndefined();
+  });
   it("polls within the original approval expiry and never accepts renewed or expired grants", async () => {
     const test = await setup();
     const initial = Date.now();
