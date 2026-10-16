@@ -100,7 +100,7 @@ export class OrganizationRegistryRepository {
 
   constructor(
     private readonly stateDirectory: string,
-    private readonly configs: ConfigRepositoryPort,
+    private readonly configs: Pick<ConfigRepositoryPort, "loadOptional">,
   ) {
     this.path = join(stateDirectory, "registry.json");
   }

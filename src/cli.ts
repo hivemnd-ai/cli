@@ -31,7 +31,7 @@ function isAutomaticUpdateEligible(args: readonly string[]): boolean {
   if (
     args.length === 0 ||
     args.some((argument) =>
-      ["--version", "-V", "--help", "-h"].includes(argument),
+      ["--version", "-V", "--help", "-h", "--offline"].includes(argument),
     )
   ) {
     return false;

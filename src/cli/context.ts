@@ -16,6 +16,7 @@ export interface AuthenticatedContext {
 
 export interface ContextSelection {
   readonly workspace?: string;
+  readonly readOnly?: boolean;
 }
 
 export interface CliContext {
@@ -46,7 +47,14 @@ export function createCliContext(
     readonly organization?: OrganizationProfile;
   }> {
     const selected = selection();
-    const configs = dependencies.configRepositoryFactory(dependencies.cwd);
+    const repository = dependencies.configRepositoryFactory(dependencies.cwd);
+    const configs = options.readOnly
+      ? {
+          load: (path: string) => repository.load(path, { readOnly: true }),
+          loadOptional: (path: string) =>
+            repository.loadOptional(path, { readOnly: true }),
+        }
+      : repository;
     if (selected.explicitConfig && selected.org) {
       throw new HivemndError(
         "CONFIG_INVALID",

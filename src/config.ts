@@ -17,6 +17,7 @@ import {
   type HivemndConfig,
 } from "./domain.js";
 import { HivemndError } from "./errors.js";
+import type { ConfigReadOptions } from "./runtime/dependencies.js";
 
 const configSchema = z.object({
   apiUrl: z
@@ -80,11 +81,14 @@ const configSchema = z.object({
 export class ConfigRepository {
   constructor(private readonly cwd: string) {}
 
-  async load(path: string): Promise<HivemndConfig> {
+  async load(
+    path: string,
+    options?: ConfigReadOptions,
+  ): Promise<HivemndConfig> {
     try {
       const contents = await readFile(this.absolute(path), "utf8");
       const parsed = parseConfig(JSON.parse(contents) as unknown);
-      return parsed.upgraded
+      return parsed.upgraded && !options?.readOnly
         ? await this.upgradeLegacyDestinations(path)
         : parsed.config;
     } catch (error: unknown) {
@@ -94,11 +98,14 @@ export class ConfigRepository {
     }
   }
 
-  async loadOptional(path: string): Promise<HivemndConfig | undefined> {
+  async loadOptional(
+    path: string,
+    options?: ConfigReadOptions,
+  ): Promise<HivemndConfig | undefined> {
     try {
       const contents = await readFile(this.absolute(path), "utf8");
       const parsed = parseConfig(JSON.parse(contents) as unknown);
-      return parsed.upgraded
+      return parsed.upgraded && !options?.readOnly
         ? await this.upgradeLegacyDestinations(path)
         : parsed.config;
     } catch (error: unknown) {

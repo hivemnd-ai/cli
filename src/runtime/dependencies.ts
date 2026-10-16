@@ -10,9 +10,16 @@ import type {
 import type { ScheduleManager } from "../schedule/periodic-sync-scheduler.js";
 import type { UpdateService } from "../update/daily-update-checker.js";
 
+export interface ConfigReadOptions {
+  readonly readOnly?: boolean;
+}
+
 export interface ConfigRepositoryPort {
-  load(path: string): Promise<HivemndConfig>;
-  loadOptional(path: string): Promise<HivemndConfig | undefined>;
+  load(path: string, options?: ConfigReadOptions): Promise<HivemndConfig>;
+  loadOptional(
+    path: string,
+    options?: ConfigReadOptions,
+  ): Promise<HivemndConfig | undefined>;
   create(
     path: string,
     config: HivemndConfig,

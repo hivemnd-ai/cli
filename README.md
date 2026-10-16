@@ -490,3 +490,40 @@ synchronization, embeddings, or managed agent configuration.
 Formats are intentionally separate. References:
 [Agent Plugins v1](https://agent-plugins.org/specification) and
 [Claude marketplaces](https://code.claude.com/docs/en/plugin-marketplaces).
+
+## Local development: offline diagnostics (unpublished)
+
+The working branch adds `hivemnd doctor --offline`; it is **not in the published
+npm 0.5.4 package**, even though this branch still reports that version.
+
+```sh
+hivemnd doctor --offline
+hivemnd --org eigen doctor --offline
+hivemnd --config /absolute/private/config.json doctor --offline
+```
+
+This mode checks local configuration without upgrading legacy destination IDs.
+It reports the configured destination count, not destination access, and reports
+usage-outbox filesystem metadata for the selected organization/installation:
+queued `.json` file count, total bytes, and oldest **file modification age**.
+These are unvalidated queued files, not verified event counts. File age is not
+capture age, ingestion delay, or delivery latency. Receipt contents are never
+read or parsed, so malformed JSON bodies cannot be diagnosed by this command.
+
+The normal capacity is 256 files / 1 MiB. Enumeration stops beyond 512 directory
+entries, 256 queued files, or 1 MiB; unsafe paths, non-private permissions,
+symlinks, changed directory/file identity, read failures or exceeded limits yield
+`unknown` without partial totals. Missing queues report empty without creating
+anything; older configurations without installation identity report unknown.
+Inspection is a bounded metadata observation, not an atomic snapshot under
+concurrent synchronization. Directory ancestry is checked before and after,
+and file descriptors use no-follow/nonblocking flags; a concurrent change may
+make the result unknown. This is not an operating-system sandbox boundary.
+
+Offline doctor performs no API/update request, credential/Keychain lookup,
+receipt delivery, creation, permission repair, or deletion. It prints no paths,
+content, destination labels, identifiers, tokens, or raw filesystem errors.
+Credentials and API are explicitly `not checked`; exit 0 means the diagnostic
+completed, not that synchronization is ready. Normal `hivemnd doctor` retains
+its credential, destination-access, and API checks. No backend or database
+change is required, and this command does not add skill-use detection or judges.

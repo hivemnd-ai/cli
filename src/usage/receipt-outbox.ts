@@ -56,22 +56,34 @@ export interface UsageReceiptOutboxOptions {
   readonly maximumBytes?: number;
 }
 
+export const USAGE_OUTBOX_MAXIMUM_ENTRIES = 256;
+export const USAGE_OUTBOX_MAXIMUM_BYTES = 1024 * 1024;
+
+export function usageOutboxRoot(
+  options: Pick<
+    UsageReceiptOutboxOptions,
+    "stateDirectory" | "apiUrl" | "installationId"
+  >,
+): string {
+  const installationId = z
+    .string()
+    .regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/)
+    .parse(options.installationId);
+  return join(
+    resolve(options.stateDirectory),
+    "organizations",
+    profileKey(options.apiUrl),
+    "usage-outboxes",
+    installationId,
+  );
+}
+
 export class UsageReceiptOutbox {
   readonly root: string;
   private readonly outbox: PrivateJsonOutbox<ContextUsageReceipt>;
 
   constructor(options: UsageReceiptOutboxOptions) {
-    const installationId = z
-      .string()
-      .regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/)
-      .parse(options.installationId);
-    this.root = join(
-      resolve(options.stateDirectory),
-      "organizations",
-      profileKey(options.apiUrl),
-      "usage-outboxes",
-      installationId,
-    );
+    this.root = usageOutboxRoot(options);
     this.outbox = new PrivateJsonOutbox({
       root: this.root,
       parse: parseReceipt,
@@ -79,8 +91,8 @@ export class UsageReceiptOutbox {
       compare: (left, right) =>
         left.observedAt.localeCompare(right.observedAt) ||
         left.eventId.localeCompare(right.eventId),
-      maximumEntries: options.maximumEntries ?? 256,
-      maximumBytes: options.maximumBytes ?? 1024 * 1024,
+      maximumEntries: options.maximumEntries ?? USAGE_OUTBOX_MAXIMUM_ENTRIES,
+      maximumBytes: options.maximumBytes ?? USAGE_OUTBOX_MAXIMUM_BYTES,
     });
   }
 
