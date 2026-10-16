@@ -527,3 +527,50 @@ Credentials and API are explicitly `not checked`; exit 0 means the diagnostic
 completed, not that synchronization is ready. Normal `hivemnd doctor` retains
 its credential, destination-access, and API checks. No backend or database
 change is required, and this command does not add skill-use detection or judges.
+
+## Internal development: inert complete bundles (unpublished)
+
+`src/marketplace/bundle-store.ts` exports `materializeLocalBundle` for a future
+adapter. It has no CLI command or production endpoint and is not in npm 0.5.4.
+The caller supplies canonical absolute local source/store paths, an owner ID,
+a source commit SHA, the complete file inventory (`path`, byte size, SHA-256,
+`executable` intent), and explicit runtime limits for files, bytes, depth and
+scanned entries. Limits are caller decisions, not marketplace product limits.
+This primitive does not fetch, resolve Git refs or attest that a supplied SHA
+owns the supplied bytes. The resolver must establish that provenance first.
+
+The complete package includes manifests, skills, scripts, binary/CSV data,
+references and license files. No Markdown-only extraction or silent hidden-file
+exclusion occurs. Empty directories and non-regular entries are rejected;
+symlinks, hardlinks, traversal, case-colliding prefixes and incomplete inventories fail.
+The source executable intent is checked and retained in the descriptor, while
+stored files are deliberately 0600 and directories 0700. This inert copy is not
+ready for direct execution; a future harness adapter owns runtime permissions.
+
+The private store must be outside agent discovery directories. Known `.agents`,
+`.claude` and `.codex` paths are rejected; the caller must also exclude any custom
+harness discovery roots. A store is created only at an explicit absent path and
+bound to an owner marker. Existing foreign or unsafe stores are refused. Bytes
+are copied into a unique owned staging directory, verified again, and published
+by an atomic directory move to `versions/<digest>/payload`. Repeating a verified
+snapshot reuses it; drift fails without rewriting it. New upstream snapshots
+can be materialized without a per-version acknowledgement gate. Older versions
+are retained, and failures remove only this operation's staging/lock. Stable
+`store/data/` is outside all versions; its contents are never read, replaced or
+removed. Package `data/` files inside a payload remain immutable package bytes.
+
+The digest identifies the internal descriptor: SHA-256 of UTF-8 `JSON.stringify`
+with ordered keys `{schemaVersion:1, ownerId, commitSha, files}`; each file has
+ordered keys `{path,size,sha256,executable}` and files sort by
+UTF-8 byte ordering (`Buffer.compare`). It includes owner and commit, so the same
+bytes from a new commit produce another store version. It is not the proposed
+backend `tree_sha256_v1` package hash or a cross-runtime canonical encoding.
+
+There is no current pointer, native install, registration, session discovery,
+enabling, reconciliation, garbage collection, script/hook/MCP execution, network,
+credential access, receipt, or usage claim. Future integration still needs a
+provenance resolver, custom discovery boundaries, native/managed ownership and
+recovery rules, and harness lifecycle adapters. Filesystem checks detect unsafe
+state and ordinary concurrent changes; this is not a sandbox against another
+process running as the same OS user. Atomic rename supplies visibility, not a
+power-loss durability guarantee.
