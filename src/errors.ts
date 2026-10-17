@@ -36,6 +36,12 @@ export class HivemndError extends Error {
   }
 }
 
+export class HttpApiError extends HivemndError {
+  constructor(readonly status: number) {
+    super("HTTP_FAILED", `Hivemnd API request failed (${status})`);
+  }
+}
+
 export function assertDefined<T>(
   value: T | undefined,
   message: string,

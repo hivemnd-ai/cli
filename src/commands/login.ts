@@ -13,6 +13,13 @@ export function registerLoginCommand(
     .command("login")
     .description("authenticate with a bearer token or one-time enrollment URL")
     .option("--token <token>", "bearer token (prefer HIVEMND_TOKEN)")
-    .option("--enrollment-url <url>", "one-time enrollment URL")
+    .option(
+      "--enrollment-url <url>",
+      "one-time enrollment URL (prefer private prompt or stdin)",
+    )
+    .option(
+      "--enrollment-stdin",
+      "read the one-time activation URL privately from stdin",
+    )
     .action((options: AuthenticationOptions) => authenticate(options, context));
 }

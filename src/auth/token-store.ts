@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import type { ResolvedToken, TokenStore } from "../domain.js";
 import { HivemndError } from "../errors.js";
 import { tenantBaseUrl } from "../tenant-url.js";
+import { macOsKeychainScript } from "./macos-keychain-script.js";
 
 export interface Keychain {
   get(): Promise<string | undefined>;
@@ -26,13 +27,13 @@ export class MacOsKeychain implements Keychain {
   async get(): Promise<string | undefined> {
     this.ensureAvailable();
     try {
-      const result = await this.execute("security", [
-        "find-generic-password",
-        "-a",
+      const result = await this.execute("/usr/bin/osascript", [
+        "-l",
+        "JavaScript",
+        "-e",
+        macOsKeychainScript,
+        "get",
         this.account,
-        "-s",
-        "hivemnd-cli",
-        "-w",
       ]);
       return result.stdout.trim() || undefined;
     } catch {
@@ -42,16 +43,18 @@ export class MacOsKeychain implements Keychain {
 
   async save(token: string): Promise<void> {
     this.ensureAvailable();
-    await this.execute("security", [
-      "add-generic-password",
-      "-U",
-      "-a",
-      this.account,
-      "-s",
-      "hivemnd-cli",
-      "-w",
-      token,
-    ]);
+    try {
+      await this.execute(
+        "/usr/bin/osascript",
+        ["-l", "JavaScript", "-e", macOsKeychainScript, "save", this.account],
+        token,
+      );
+    } catch {
+      throw new HivemndError(
+        "KEYCHAIN_UNAVAILABLE",
+        "Unable to save the credential securely in macOS Keychain",
+      );
+    }
   }
 
   available(): boolean {

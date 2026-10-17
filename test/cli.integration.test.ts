@@ -22,6 +22,7 @@ import {
 } from "../src/cli.js";
 import { parseEnrollmentUrl } from "../src/auth/enrollment-url.js";
 import { ConfigRepository } from "../src/config.js";
+import { HttpApiError, HivemndError } from "../src/errors.js";
 import { createProgram } from "../src/cli/program.js";
 import {
   resolveCliScriptPath,
@@ -601,6 +602,132 @@ describe("init command", () => {
 });
 
 describe("authentication and diagnostics commands", () => {
+  it("authenticates privately from stdin without requiring a published release or changing integrations", async () => {
+    const secretUrl =
+      "https://shared.hivemnd.cloud/eigen/enroll?token=private-fixture";
+    const save = vi.fn(async () => undefined);
+    const manifest = vi.fn(async () => {
+      throw new Error("no published release");
+    });
+    const configuration = vi.fn((token: string) =>
+      api().clientConfiguration(token),
+    );
+    const exchange = vi.fn(
+      (...args: Parameters<ApiClient["exchangeEnrollment"]>) =>
+        api().exchangeEnrollment(...args),
+    );
+    const { deps, selectedConfig } = await setup({
+      readAuthenticationInput: async () => secretUrl + "\n",
+      selectedStore: { get: async () => undefined, save },
+      selectedApi: {
+        ...api(),
+        manifest,
+        clientConfiguration: configuration,
+        exchangeEnrollment: exchange,
+      },
+    });
+    await expect(runCli(["login", "--enrollment-stdin"], deps)).resolves.toBe(
+      0,
+    );
+    expect(exchange).toHaveBeenCalledWith(
+      "private-fixture",
+      expect.any(Object),
+    );
+    expect(configuration).toHaveBeenCalledWith("enrolled-token");
+    expect(manifest).not.toHaveBeenCalled();
+    expect(save).toHaveBeenCalledWith("enrolled-token");
+    const persisted = JSON.parse(
+      await readFile(join(deps.cwd, ".hivemnd/config.json"), "utf8"),
+    ) as HivemndConfig;
+    expect(persisted.destinations).toMatchObject(selectedConfig.destinations);
+    expect(persisted.installationId).toBe("installation-1");
+    expect(deps.output.messages.join(" ")).toContain(
+      "installation installation-1",
+    );
+    expect(JSON.stringify(persisted)).not.toContain("private-fixture");
+    expect(JSON.stringify(persisted)).not.toContain("enrolled-token");
+    expect(deps.output.messages.join(" ")).not.toMatch(
+      /private-fixture|enrolled-token/,
+    );
+  });
+
+  it("uses the hidden prompt for interactive login and refuses ambiguous or empty private input", async () => {
+    const secret = vi.fn(
+      async () =>
+        "https://shared.hivemnd.cloud/eigen/enroll?token=opaque-fictitious-auth-proof",
+    );
+    const save = vi.fn(async () => undefined);
+    const { deps } = await setup({
+      prompt: { interactive: true, secret, input: vi.fn(), confirm: vi.fn() },
+      readAuthenticationInput: async () => " ",
+      selectedStore: { get: async () => undefined, save },
+    });
+    await expect(runCli(["login"], deps)).resolves.toBe(0);
+    expect(secret).toHaveBeenCalledWith("Activation URL");
+    await expect(
+      runCli(["login", "--enrollment-stdin", "--token", "x"], deps),
+    ).resolves.toBe(1);
+    await expect(runCli(["login", "--enrollment-stdin"], deps)).resolves.toBe(
+      1,
+    );
+    expect(deps.output.errors.join(" ")).not.toContain(
+      "opaque-fictitious-auth-proof",
+    );
+    const empty = await setup({ readAuthenticationInput: async () => "" });
+    await expect(
+      runCli(["login", "--enrollment-stdin"], empty.deps),
+    ).resolves.toBe(1);
+    expect(empty.deps.output.errors.at(-1)).toContain("[AUTH_MISSING]");
+    const unavailable = await setup();
+    await expect(
+      runCli(["login", "--enrollment-stdin"], unavailable.deps),
+    ).resolves.toBe(1);
+  });
+
+  it("rejects private stdin when its input is a terminal before reading or echoing anything", async () => {
+    const read = vi.fn(async () => "private-terminal-fixture");
+    const { deps } = await setup({
+      authenticationInputIsTTY: true,
+      prompt: { interactive: false, input: vi.fn(), confirm: vi.fn() },
+      readAuthenticationInput: read,
+    });
+    await expect(runCli(["login", "--enrollment-stdin"], deps)).resolves.toBe(
+      1,
+    );
+    expect(read).not.toHaveBeenCalled();
+    expect(deps.output.errors.at(-1)).toContain("[INTERACTIVE_REQUIRED]");
+    expect(deps.output.messages.join(" ")).not.toContain(
+      "private-terminal-fixture",
+    );
+  });
+
+  it("reports authenticated with an unavailable release, but preserves other server and auth failures", async () => {
+    const manifest = vi.fn(async () => {
+      throw new HttpApiError(404);
+    });
+    const clientConfiguration = vi.fn((token: string) =>
+      api().clientConfiguration(token),
+    );
+    const { deps } = await setup({
+      selectedApi: { ...api(), manifest, clientConfiguration },
+    });
+    await expect(runCli(["status"], deps)).resolves.toBe(0);
+    expect(deps.output.messages.at(-1)).toContain(
+      "authenticated: release unavailable",
+    );
+    expect(clientConfiguration).toHaveBeenCalledWith("token");
+    manifest.mockRejectedValueOnce(new HttpApiError(503));
+    await expect(runCli(["status"], deps)).resolves.toBe(1);
+    manifest.mockRejectedValueOnce(new Error("network unavailable"));
+    await expect(runCli(["status"], deps)).resolves.toBe(1);
+    clientConfiguration.mockRejectedValueOnce(
+      new HivemndError("AUTH_MISSING", "Authentication rejected"),
+    );
+    manifest.mockClear();
+    await expect(runCli(["status"], deps)).resolves.toBe(1);
+    expect(manifest).not.toHaveBeenCalled();
+  });
+
   it("validates and stores direct and enrollment tokens without printing secrets", async () => {
     const save = vi.fn(async () => undefined);
     const exchangeEnrollment = vi.fn(async () => ({
@@ -2138,7 +2265,7 @@ describe("command shell", () => {
     expect(defaultDependencies.clientPlatform).toBe(
       `${process.platform}-${process.arch}`,
     );
-    expect(defaultDependencies.clientVersion).toBe("0.6.0");
+    expect(defaultDependencies.clientVersion).toBe("0.6.1");
     expect(
       defaultDependencies.scheduleManagerFactory({
         apiUrl: "https://shared.hivemnd.cloud/eigen",

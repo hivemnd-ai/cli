@@ -41,6 +41,8 @@ export interface RuntimeDependencies {
   readonly output: Output;
   readonly prompt: PromptPort;
   readonly readHookInput: () => Promise<string>;
+  readonly readAuthenticationInput?: () => Promise<string>;
+  readonly authenticationInputIsTTY?: boolean;
   readonly configRepositoryFactory: (cwd: string) => ConfigRepositoryPort;
   readonly tokenStoreFactory: (config: HivemndConfig) => TokenStore;
   readonly apiClientFactory: (config: HivemndConfig) => ApiClient;

@@ -150,20 +150,28 @@ describe("secure credential storage", () => {
   });
 
   it("uses macOS security and rejects unsupported platforms", async () => {
-    const execute = vi.fn(async () => ({ stdout: " stored-token\n" }));
+    const execute = vi.fn<
+      (
+        file: string,
+        args: readonly string[],
+        input?: string,
+      ) => Promise<{ stdout: string }>
+    >(async () => ({ stdout: " stored-token\n" }));
     const keychain = new MacOsKeychain("tenant", "darwin", execute);
     await expect(keychain.get()).resolves.toBe("stored-token");
     await expect(keychain.save("new-token")).resolves.toBeUndefined();
-    expect(execute).toHaveBeenLastCalledWith("security", [
-      "add-generic-password",
-      "-U",
-      "-a",
-      "tenant",
-      "-s",
-      "hivemnd-cli",
-      "-w",
-      "new-token",
-    ]);
+    const [file, args, input] = execute.mock.calls.at(-1)!;
+    expect(file).toBe("/usr/bin/osascript");
+    expect(args).toEqual(
+      expect.arrayContaining(["-l", "JavaScript", "save", "tenant"]),
+    );
+    expect(JSON.stringify(args)).not.toContain("new-token");
+    expect(input).toBe("new-token");
+    execute.mockRejectedValueOnce(new Error("new-token provider diagnostic"));
+    await expect(keychain.save("new-token")).rejects.toMatchObject({
+      code: "KEYCHAIN_UNAVAILABLE",
+      message: "Unable to save the credential securely in macOS Keychain",
+    });
     execute.mockRejectedValueOnce(new Error("not found"));
     await expect(keychain.get()).resolves.toBeUndefined();
     execute.mockResolvedValueOnce({ stdout: "" });

@@ -189,15 +189,24 @@ conflict and is never changed.
 
 ## Authentication
 
-`hivemnd login` accepts either a one-time enrollment URL or a bearer token. It
-validates access against the manifest before persisting anything. On macOS it
-stores the credential in Keychain under the `hivemnd-cli` service. Headless
-systems can provide `HIVEMND_TOKEN` for the current process; the CLI has no
-plaintext credential-file fallback.
+`hivemnd login` accepts a one-time activation URL in a hidden interactive prompt.
+For automation, use `hivemnd login --enrollment-stdin` and provide the URL through
+standard input, never a command argument or shell history. Existing explicit
+`--enrollment-url`, `--token` and process-local `HIVEMND_TOKEN` inputs remain
+supported.
 
-Prefer `HIVEMND_TOKEN` over `--token` in automation so a long-lived token is not
-copied into shell history. The CLI identifies enrollment requests as
-`hivemnd_cli`; the backend must accept that value.
+Login validates the credential using the authenticated client configuration
+endpoint, independently of artifact-release availability. It does not install
+integrations, synchronize artifacts or create a schedule. `status` distinguishes
+valid authentication from an unavailable release; it does not claim artifacts
+were synchronized.
+
+On macOS, credentials remain in Keychain under the `hivemnd-cli` service, isolated
+by canonical tenant URL. The system JXA helper calls Security.framework and
+receives credential data only through stdin, without placing it in process
+arguments, temporary files or diagnostics. It does not broaden Keychain ACLs.
+Headless systems can provide `HIVEMND_TOKEN` for the current process; no plaintext
+credential-file fallback exists. Enrollment requests identify as `hivemnd_cli`.
 
 ## MCP connection
 

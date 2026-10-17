@@ -21,7 +21,7 @@ import type { RuntimeDependencies } from "./dependencies.js";
 import { clientTechnicalFeatures } from "../client/runtime-contract.js";
 
 const stateDirectory = process.env.HIVEMND_HOME ?? join(homedir(), ".hivemnd");
-const clientVersion = "0.6.0";
+const clientVersion = "0.6.1";
 
 export function createDefaultApiClient(config: HivemndConfig): HttpApiClient {
   return new HttpApiClient(config.apiUrl, fetch, undefined, {
@@ -46,6 +46,8 @@ export const defaultDependencies: RuntimeDependencies = {
   },
   prompt: new ReadlinePrompter(process.stdin, process.stdout),
   readHookInput: readStandardInput,
+  readAuthenticationInput: readStandardInput,
+  authenticationInputIsTTY: process.stdin.isTTY,
   configRepositoryFactory: (cwd) => new ConfigRepository(cwd),
   tokenStoreFactory: (config) =>
     new SecureTokenStore(

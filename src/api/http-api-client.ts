@@ -22,7 +22,7 @@ import {
   clientRuntimeHeaders,
   type ClientRuntimeMetadata,
 } from "../client/runtime-contract.js";
-import { HivemndError } from "../errors.js";
+import { HivemndError, HttpApiError } from "../errors.js";
 import { isBoundedSemver, parseSemver } from "../version/semver.js";
 import {
   isWithinTenant,
@@ -507,10 +507,7 @@ export class HttpApiClient implements ApiClient {
           "Hivemnd authentication is missing or no longer valid",
         );
       }
-      throw new HivemndError(
-        "HTTP_FAILED",
-        `Hivemnd API request failed (${response.status})`,
-      );
+      throw new HttpApiError(response.status);
     }
     return response;
   }
